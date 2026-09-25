@@ -245,6 +245,8 @@ def cold_start_stress(
 
 
 def write_model_card(
+    dataset_rows: int,
+    cold_pool_rows: int,
     objective: str,
     cv_mae: dict[str, float],
     baseline_metrics: Metrics,
@@ -265,7 +267,7 @@ VroomValue estimates a used vehicle's **Selling_Price** from the supplied 17 pre
 ## Data
 
 - Source: `data/automobile_dataset.csv` supplied with this project.
-- Rows: 5,500.
+- Rows: {dataset_rows:,}.
 - Target: `Selling_Price`.
 - Reference year frozen into the artifact: {REFERENCE_YEAR}.
 - `Engine_Size` contract: 0.0–5.7 and at most one decimal place (0.1 increments); 0.0 is valid for electric vehicles.
@@ -289,6 +291,9 @@ Duplicate fingerprints are grouped before splitting. Ten percent is a locked int
 
 ### Cold-start Make-Model stress view
 
+This stress test is derived only from the main training partition; calibration and locked holdout rows are excluded.
+
+- Source training-pool rows: **{cold_pool_rows:,}**
 - Held-out rows: **{cold_rows:,}**
 - Held-out Make-Model groups: **{', '.join(cold_groups)}**
 - Cold-start MAE: **${cold_metrics.mae:,.2f}**
@@ -347,7 +352,7 @@ def main() -> int:
             f"MODEL GATE FAILED: 80% interval coverage is {coverage:.3%}; required 77%-83%."
         )
 
-    cold_metrics, cold_groups, cold_rows = cold_start_stress(frame, objective)
+    cold_metrics, cold_groups, cold_rows = cold_start_stress(train, objective)
 
     artifact_path = Path(args.artifact)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -370,6 +375,7 @@ def main() -> int:
             "coverage_80": coverage,
             "cv_mae": cv_mae,
             "cold_start": asdict(cold_metrics),
+            "cold_start_pool_rows": len(train),
             "cold_start_rows": cold_rows,
             "cold_start_groups": cold_groups,
         },
@@ -391,6 +397,8 @@ def main() -> int:
         encoding="utf-8",
     )
     write_model_card(
+        len(frame),
+        len(train),
         objective,
         cv_mae,
         baseline_metrics,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from pathlib import Path
@@ -17,6 +18,7 @@ from ml.features.build import build_features
 
 MODEL_PATH = Path(os.getenv("MODEL_ARTIFACT_PATH", "models/auto_price.joblib"))
 DATA_PATH = Path(os.getenv("DATASET_PATH", str(DATASET_PATH)))
+logger = logging.getLogger("vroomvalue.runtime")
 
 
 def _file_signature(path: Path) -> tuple[int, int, int] | None:
@@ -66,16 +68,31 @@ class Runtime:
             verify_checksum(MODEL_PATH)
             bundle = joblib.load(MODEL_PATH)
             required = {
-                "model", "objective", "reference_year", "interval", "support",
-                "model_name", "model_version", "schema_version", "as_of_date",
+                "model",
+                "objective",
+                "reference_year",
+                "interval",
+                "support",
+                "feature_columns",
+                "model_name",
+                "model_version",
+                "schema_version",
+                "as_of_date",
             }
             missing = sorted(required.difference(bundle))
             if missing:
                 raise ValueError(f"artifact missing keys: {', '.join(missing)}")
+            if not bundle["feature_columns"]:
+                raise ValueError("artifact feature_columns is empty")
+
             self.bundle = bundle
-            self._explainer = shap.TreeExplainer(bundle["model"])
             self.model_error = None
-        except Exception as exc:  # noqa: BLE001 - fail closed on any artifact-load failure
+            try:
+                self._explainer = shap.TreeExplainer(bundle["model"])
+            except Exception:  # noqa: BLE001 - explanation failure must not disable pricing
+                self._explainer = None
+                logger.exception("SHAP explainer initialization failed; pricing remains available.")
+        except Exception as exc:  # noqa: BLE001 - fail closed on artifact-load failures
             self.bundle = None
             self._explainer = None
             self.model_error = f"Model artifact could not be loaded: {exc}"
@@ -159,47 +176,110 @@ class Runtime:
             if value < bounds["min"] or value > bounds["max"]:
                 warnings.append(f"{training_field} is outside the observed training range.")
 
-        if payload.engine_size == 0 and payload.fuel_type != "Electric":
+        if payload.engine_size == 0 and payload.fuel_type.casefold() != "electric":
             warnings.append(
                 "Engine_Size 0.0 was treated as low-support for a non-electric vehicle."
             )
         return ("low_confidence" if warnings else "in_distribution", warnings)
+
+    def _align_features(self, features: pd.DataFrame) -> pd.DataFrame:
+        if not self.bundle:
+            raise RuntimeError(self.ready_error() or "Model unavailable")
+
+        expected = list(self.bundle["feature_columns"])
+        actual = list(features.columns)
+        missing = [column for column in expected if column not in actual]
+        extra = [column for column in actual if column not in expected]
+        if missing or extra:
+            details: list[str] = []
+            if missing:
+                details.append(f"missing={missing}")
+            if extra:
+                details.append(f"extra={extra}")
+            raise RuntimeError(
+                "Inference feature schema mismatch: " + "; ".join(details)
+            )
+        return features.reindex(columns=expected)
+
+    def _explain(
+        self,
+        features: pd.DataFrame,
+        warnings: list[str],
+    ) -> list[dict[str, str]]:
+        if self._explainer is None:
+            warnings.append("Explanation unavailable for this prediction.")
+            return []
+
+        try:
+            shap_values = self._explainer.shap_values(features)
+            values = np.asarray(shap_values)
+            if values.ndim == 1:
+                row_values = values
+            elif values.ndim >= 2:
+                row_values = values[0]
+            else:
+                raise ValueError("SHAP returned an unexpected value shape")
+
+            if len(row_values) != len(features.columns):
+                raise ValueError("SHAP feature count does not match inference features")
+
+            order = np.argsort(np.abs(row_values))[::-1][:3]
+            return [
+                {
+                    "feature": str(features.columns[index]),
+                    "direction": "up" if float(row_values[index]) >= 0 else "down",
+                }
+                for index in order
+            ]
+        except Exception:  # noqa: BLE001 - explanation failure must not fail pricing
+            logger.exception("SHAP explanation failed for a prediction.")
+            warnings.append("Explanation unavailable for this prediction.")
+            return []
 
     def predict(self, payload: VehicleInput) -> dict[str, Any]:
         if not self.bundle:
             raise RuntimeError(self.ready_error() or "Model unavailable")
 
         row = pd.DataFrame(
-            [{
-                "Make": payload.make,
-                "Model": payload.model,
-                "Year": payload.year,
-                "Fuel_Type": payload.fuel_type,
-                "Transmission": payload.transmission,
-                "Engine_Size": payload.engine_size,
-                "Mileage": payload.mileage,
-                "Horsepower": payload.horsepower,
-                "Torque": payload.torque,
-                "Owners": payload.owners,
-                "Accident_History": payload.accident_history,
-                "Service_History": payload.service_history,
-                "Color": payload.color,
-                "Body_Type": payload.body_type,
-                "Drivetrain": payload.drivetrain,
-                "Fuel_Efficiency": payload.fuel_efficiency,
-                "Location": payload.location,
-            }]
+            [
+                {
+                    "Make": payload.make,
+                    "Model": payload.model,
+                    "Year": payload.year,
+                    "Fuel_Type": payload.fuel_type,
+                    "Transmission": payload.transmission,
+                    "Engine_Size": payload.engine_size,
+                    "Mileage": payload.mileage,
+                    "Horsepower": payload.horsepower,
+                    "Torque": payload.torque,
+                    "Owners": payload.owners,
+                    "Accident_History": payload.accident_history,
+                    "Service_History": payload.service_history,
+                    "Color": payload.color,
+                    "Body_Type": payload.body_type,
+                    "Drivetrain": payload.drivetrain,
+                    "Fuel_Efficiency": payload.fuel_efficiency,
+                    "Location": payload.location,
+                }
+            ]
         )
-        x = build_features(row, self.bundle["reference_year"])
-        raw = float(self.bundle["model"].predict(x)[0])
-        estimate = float(np.expm1(raw) if self.bundle["objective"] == "log1p" else raw)
+        features = self._align_features(
+            build_features(row, self.bundle["reference_year"])
+        )
+        raw = float(self.bundle["model"].predict(features)[0])
+        estimate = float(
+            np.expm1(raw) if self.bundle["objective"] == "log1p" else raw
+        )
         if not np.isfinite(estimate):
             raise RuntimeError("Model produced a non-finite estimate.")
         estimate = max(0.0, estimate)
 
         interval = self.bundle["interval"]
         bucket = int(
-            np.digitize([estimate], np.asarray(interval["edges"][1:-1], dtype=float))[0]
+            np.digitize(
+                [estimate],
+                np.asarray(interval["edges"][1:-1], dtype=float),
+            )[0]
         )
         half_width = float(interval["quantiles"][bucket])
         if not np.isfinite(half_width) or half_width < 0:
@@ -211,17 +291,7 @@ class Runtime:
 
         lower = max(0.0, estimate - half_width)
         upper = estimate + half_width
-
-        top_factors: list[dict[str, str]] = []
-        if self._explainer is not None:
-            shap_values = self._explainer.shap_values(x)
-            arr = np.asarray(shap_values)[0]
-            order = np.argsort(np.abs(arr))[::-1][:3]
-            for index in order:
-                top_factors.append({
-                    "feature": str(x.columns[index]),
-                    "direction": "up" if float(arr[index]) >= 0 else "down",
-                })
+        top_factors = self._explain(features, warnings)
 
         return {
             "estimate": round(estimate, 2),

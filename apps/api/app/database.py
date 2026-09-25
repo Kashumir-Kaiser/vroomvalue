@@ -4,7 +4,7 @@ import os
 from datetime import UTC, date, datetime
 from functools import lru_cache
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, create_engine, func, select, text
+from sqlalchemy import Date, DateTime, Float, Integer, String, create_engine, func, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -40,6 +40,16 @@ class FeedbackRecord(Base):
     )
 
 
+class ServiceMetricRecord(Base):
+    __tablename__ = "service_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_input_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+
+
 def database_url() -> str:
     return os.getenv(
         "DATABASE_URL",
@@ -49,7 +59,6 @@ def database_url() -> str:
 
 @lru_cache(maxsize=4)
 def _engine_for_url(url: str) -> Engine:
-    # Reuse the SQLAlchemy pool instead of constructing a new engine for every request.
     return create_engine(url, pool_pre_ping=True)
 
 
@@ -90,8 +99,74 @@ def save_feedback(record: FeedbackRecord) -> None:
             raise ValueError("Feedback already exists for this prediction id.") from exc
 
 
-def admin_metrics() -> dict[str, int]:
+def _metric_update_values(
+    status_code: int,
+    latency_ms: float,
+) -> dict[str, object]:
+    return {
+        "request_count": ServiceMetricRecord.request_count + 1,
+        "error_count": ServiceMetricRecord.error_count + int(status_code >= 400),
+        "invalid_input_count": (
+            ServiceMetricRecord.invalid_input_count + int(status_code == 422)
+        ),
+        "total_latency_ms": ServiceMetricRecord.total_latency_ms + float(latency_ms),
+    }
+
+
+def record_request_metric(status_code: int, latency_ms: float) -> None:
+    """Atomically update process-independent request counters in the database."""
+    values = _metric_update_values(status_code, latency_ms)
+
+    with Session(engine()) as session:
+        result = session.execute(
+            update(ServiceMetricRecord)
+            .where(ServiceMetricRecord.id == 1)
+            .values(**values)
+        )
+        if result.rowcount:
+            session.commit()
+            return
+
+        session.add(
+            ServiceMetricRecord(
+                id=1,
+                request_count=1,
+                error_count=int(status_code >= 400),
+                invalid_input_count=int(status_code == 422),
+                total_latency_ms=float(latency_ms),
+            )
+        )
+        try:
+            session.commit()
+            return
+        except IntegrityError:
+            # Another worker can create the singleton row between UPDATE and INSERT.
+            session.rollback()
+
+        session.execute(
+            update(ServiceMetricRecord)
+            .where(ServiceMetricRecord.id == 1)
+            .values(**values)
+        )
+        session.commit()
+
+
+def admin_metrics() -> dict[str, int | float]:
     with Session(engine()) as session:
         predictions = session.scalar(select(func.count()).select_from(PredictionRecord)) or 0
         feedback = session.scalar(select(func.count()).select_from(FeedbackRecord)) or 0
-    return {"prediction_count": int(predictions), "feedback_count": int(feedback)}
+        service = session.get(ServiceMetricRecord, 1)
+
+    requests = int(service.request_count) if service else 0
+    errors = int(service.error_count) if service else 0
+    invalid = int(service.invalid_input_count) if service else 0
+    total_latency = float(service.total_latency_ms) if service else 0.0
+
+    return {
+        "prediction_count": int(predictions),
+        "feedback_count": int(feedback),
+        "request_count": requests,
+        "error_rate": round(errors / requests, 4) if requests else 0.0,
+        "invalid_input_rate": round(invalid / requests, 4) if requests else 0.0,
+        "avg_latency_ms": round(total_latency / requests, 2) if requests else 0.0,
+    }

@@ -1,11 +1,15 @@
 import os
+import tempfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from apps.api.app.main import app
+_TEST_DIR = tempfile.TemporaryDirectory()
+_TEST_DB = Path(_TEST_DIR.name) / "vroomvalue-integration.db"
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
 
-os.environ["DATABASE_URL"] = "sqlite:///./test_vroomvalue.db"
+from apps.api.app.main import app  # noqa: E402
 
 VEHICLE = {
     "make": "Toyota",
@@ -28,6 +32,12 @@ VEHICLE = {
 }
 
 
+@pytest.fixture(scope="module", autouse=True)
+def cleanup_database():
+    yield
+    _TEST_DIR.cleanup()
+
+
 def test_happy_path_and_feedback():
     if not Path("models/auto_price.joblib").exists():
         raise AssertionError("Train the model first: python -m ml.training.train")
@@ -35,6 +45,8 @@ def test_happy_path_and_feedback():
     with TestClient(app) as client:
         ready = client.get("/health/ready")
         assert ready.status_code == 200
+
+        before = client.get("/v1/admin/metrics").json()
 
         response = client.post("/v1/predictions", json=VEHICLE)
         assert response.status_code == 200
@@ -44,7 +56,6 @@ def test_happy_path_and_feedback():
             <= body["estimated_price"]["amount"]
             <= body["interval_80"]["upper"]
         )
-        assert len(body["top_factors"]) == 3
 
         feedback = client.post(
             "/v1/feedback",
@@ -56,9 +67,14 @@ def test_happy_path_and_feedback():
         )
         assert feedback.status_code == 200
 
-        metrics = client.get("/v1/admin/metrics").json()
-        assert metrics["prediction_count"] >= 1
-        assert metrics["feedback_count"] >= 1
+        # Health/admin requests themselves are excluded from service-rate counters.
+        client.get("/health/live")
+        client.get("/health/ready")
+        after = client.get("/v1/admin/metrics").json()
+
+        assert after["prediction_count"] >= 1
+        assert after["feedback_count"] >= 1
+        assert after["request_count"] == before["request_count"] + 2
 
 
 def test_engine_size_validation_is_422():
