@@ -29,6 +29,13 @@ Duplicate fingerprints are grouped before splitting. Ten percent is a locked int
 - Holdout WAPE: **9.07%**
 - Nominal 80% interval holdout coverage: **81.09%**
 
+### Cold-start Make-Model stress view
+
+- Held-out rows: **1,057**
+- Held-out Make-Model groups: **Audi|A4, Audi|Q5, Chevrolet|Equinox, Honda|Civic, Honda|Pilot, Mercedes-Benz|C-Class, Toyota|RAV4, Volkswagen|Atlas**
+- Cold-start MAE: **$3,890.55**
+- Cold-start WAPE: **32.91%**
+
 Intervals use split-conformal absolute residuals with four prediction-price buckets (Mondrian calibration). This keeps the uncertainty width more appropriate across low- and high-price vehicles. Bucket half-widths are: $117, $1,388, $1,475, $2,758.
 
 ## Limitations
