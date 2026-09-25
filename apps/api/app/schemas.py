@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -68,7 +68,7 @@ class VehicleInput(StrictInputModel):
         return value
 
     @model_validator(mode="after")
-    def electric_engine_consistency(self) -> "VehicleInput":
+    def electric_engine_consistency(self) -> VehicleInput:
         # Zero is valid for electric vehicles. Contradictory non-electric zero is
         # deliberately not rejected: serving marks it low-support as specified.
         return self
@@ -82,7 +82,7 @@ class FeedbackInput(StrictInputModel):
     @field_validator("sale_date")
     @classmethod
     def sale_date_not_in_future(cls, value: date) -> date:
-        if value > date.today():
+        if value > datetime.now(UTC).date():
             raise ValueError("Sale date cannot be in the future.")
         return value
 
