@@ -5,25 +5,25 @@ from pydantic import ValidationError
 
 from apps.api.app.schemas import FeedbackInput, VehicleInput
 
-BASE = dict(
-    make="Toyota",
-    model="Camry",
-    year=2022,
-    fuel_type="Petrol",
-    transmission="Automatic",
-    engine_size=2.5,
-    mileage=42000,
-    horsepower=203.0,
-    torque=184.0,
-    owners=1,
-    accident_history=0,
-    service_history="Full Service",
-    color="White",
-    body_type="Sedan",
-    drivetrain="FWD",
-    fuel_efficiency=32.0,
-    location="TX",
-)
+BASE = {
+    "make": "Toyota",
+    "model": "Camry",
+    "year": 2022,
+    "fuel_type": "Petrol",
+    "transmission": "Automatic",
+    "engine_size": 2.5,
+    "mileage": 42000,
+    "horsepower": 203.0,
+    "torque": 184.0,
+    "owners": 1,
+    "accident_history": 0,
+    "service_history": "Full Service",
+    "color": "White",
+    "body_type": "Sedan",
+    "drivetrain": "FWD",
+    "fuel_efficiency": 32.0,
+    "location": "TX",
+}
 
 
 def test_engine_size_tenth_is_valid():
@@ -35,7 +35,10 @@ def test_engine_size_two_decimals_is_rejected():
         VehicleInput(**{**BASE, "engine_size": 2.55})
 
 
-@pytest.mark.parametrize("field", ["engine_size", "horsepower", "torque", "fuel_efficiency"])
+@pytest.mark.parametrize(
+    "field",
+    ["engine_size", "horsepower", "torque", "fuel_efficiency"],
+)
 def test_non_finite_numbers_are_rejected(field: str):
     with pytest.raises(ValidationError):
         VehicleInput(**{**BASE, field: math.inf})
