@@ -51,8 +51,6 @@ def _require_admin_token(provided: str | None) -> None:
 
 
 def _persist_request_metric(path: str, status_code: int, latency_ms: float) -> None:
-    if path in METRICS_EXCLUDED_PATHS:
-        return
     record_request_metric(status_code, latency_ms)
 
 
