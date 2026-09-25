@@ -1,85 +1,472 @@
 # VroomValue
 
-VroomValue is a used-vehicle price prediction MVP built around the supplied 5,500-row automobile dataset. It trains a CatBoost regressor, compares it with a hierarchical Make-Model-Year median baseline, calibrates an 80% prediction range, exposes a FastAPI service, stores predictions and feedback in PostgreSQL, and serves a Next.js vehicle-pricing interface.
+VroomValue is an end-to-end used-vehicle price prediction system built from the supplied 5,500-row automobile dataset. It combines a CatBoost regression pipeline, calibrated prediction intervals, SHAP-based local explanations, a FastAPI inference service, PostgreSQL persistence, and a Next.js web interface.
 
-## Data contract
+The project is designed as a reproducible machine-learning application rather than a standalone notebook. Training, validation, serving, persistence, UI behavior, model metadata, and CI checks are all kept in the repository.
 
-The source file is `data/automobile_dataset.csv`. It is project data and must not be generated, replaced with synthetic rows, or silently substituted. The API and trainer fail closed when it is missing or empty. The dataset contains 18 columns total: 17 predictors plus `Selling_Price`.
+## Project objectives
 
-`Engine_Size` is constrained to **0.0–5.7 with at most one decimal place (0.1 increments)** end-to-end. Missing engine size remains allowed. A zero engine size is valid for electric vehicles; on a non-electric vehicle it is accepted but flagged as low support rather than silently changed.
+Given a vehicle description, VroomValue returns:
 
-The dataset does not include explicit unit/currency columns. For this MVP the UI and model card therefore state these assumptions visibly: **miles**, **lb-ft**, **MPG / MPGe**, and **USD**.
+- an estimated selling price in USD;
+- an 80% calibrated prediction interval;
+- an in-distribution or low-confidence support label;
+- warnings when inputs fall outside observed training support;
+- the three strongest local SHAP factors and their direction;
+- the model version, schema version, and model date attached to the prediction.
 
-## Architecture
+The result is intended for decision support. It is not an appraisal guarantee and the SHAP factors describe model behavior rather than causal price effects.
 
-- `ml/contracts`: executable dataset and validation contract.
-- `ml/features`: deterministic features shared by training and serving.
-- `ml/training`: grouped evaluation, baseline, CatBoost training, conformal calibration, MLflow logging.
-- `apps/api`: FastAPI + Pydantic + SQLAlchemy prediction/feedback API.
-- `apps/web`: Next.js TypeScript UI styled as a vehicle specification/window-sticker sheet rather than a generic dashboard.
-- `infra/docker`: container definitions.
-- `tests`: unit, data-contract, model-gate, and API integration tests.
+## Technology stack
 
-The model uses a frozen reference year of **2026** for `vehicle_age`, plus `mileage_per_year`, `log1p(Mileage)`, and explicit missing indicators. Raw-price and `log1p(price)` targets are compared using grouped cross-validation. The final uncertainty layer is split conformal with four prediction-price buckets, calibrated on a dedicated set that is not used for point-model selection.
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Machine learning | CatBoost, scikit-learn, NumPy, pandas | Regression, grouped evaluation, feature preparation, calibration |
+| Explainability | SHAP | Local feature-attribution factors |
+| Experiment tracking | MLflow | Local training-run metrics and artifacts |
+| API | FastAPI, Pydantic | Typed validation and inference endpoints |
+| Persistence | PostgreSQL, SQLAlchemy | Prediction and feedback records |
+| Frontend | Next.js 15, React 19, TypeScript | Vehicle input, results, feedback, and admin views |
+| Packaging | Docker, Docker Compose | Reproducible local application stack |
+| Testing | pytest, Ruff, GitHub Actions | Unit, data-contract, model, integration, lint, and build checks |
 
-## Local setup
+## Repository structure
 
-Python 3.12 and Node 22 are the supported local versions.
+```text
+vroomvalue/
+├── apps/
+│   ├── api/
+│   │   └── app/
+│   │       ├── database.py       # SQLAlchemy models and persistence
+│   │       ├── main.py           # FastAPI routes, middleware, health checks
+│   │       ├── model_runtime.py  # Model loading, integrity checks, inference
+│   │       └── schemas.py        # Pydantic request/response validation
+│   └── web/
+│       ├── app/                  # Next.js pages and global styles
+│       ├── components/           # Prediction form and result UI
+│       ├── admin/                # Runtime metrics page
+│       └── feedback/             # Actual-sale feedback page
+├── data/
+│   └── automobile_dataset.csv   # Supplied project dataset
+├── infra/
+│   └── docker/                  # API and web Dockerfiles
+├── ml/
+│   ├── contracts/               # Executable dataset contract
+│   ├── features/                # Shared deterministic feature engineering
+│   └── training/                # Model training, calibration, evaluation
+├── models/                      # Generated model artifacts
+├── tests/
+│   ├── data/                    # Dataset-contract tests
+│   ├── integration/             # API and persistence tests
+│   ├── model/                   # Saved-model release gates
+│   └── unit/                    # Schema, features, calibration logic
+├── .github/workflows/ci.yml
+├── docker-compose.yml
+├── model_card.md
+├── pyproject.toml
+└── README.md
+```
+
+## Dataset
+
+The source dataset is `data/automobile_dataset.csv` and contains **5,500 rows and 18 columns**: 17 predictors plus the target `Selling_Price`.
+
+The predictors are:
+
+`Make`, `Model`, `Year`, `Fuel_Type`, `Transmission`, `Engine_Size`, `Mileage`, `Horsepower`, `Torque`, `Owners`, `Accident_History`, `Service_History`, `Color`, `Body_Type`, `Drivetrain`, `Fuel_Efficiency`, and `Location`.
+
+The training and API paths use the same data contract. The application does not create synthetic replacement data if the source file is missing or malformed.
+
+### Engine size contract
+
+`Engine_Size` is constrained to:
+
+- minimum: **0.0**
+- maximum: **5.7**
+- precision: **at most one decimal place**
+- valid increment: **0.1**
+- nullable: **yes**
+
+Examples such as `2.5` and `3.0` are valid. A value such as `2.55` is rejected rather than rounded. `0.0` is valid for electric vehicles; a non-electric vehicle with `0.0` is accepted but marked as low-confidence support.
+
+### Missing values
+
+Optional missing values are preserved rather than replaced with favorable defaults. Categorical missing values are represented as an explicit `MISSING` category for model input, while numeric missing values remain missing for CatBoost and receive companion missing-indicator features.
+
+The dataset contract also rejects malformed numeric values, non-finite values, missing required fields, invalid integer fields, invalid accident-history values, out-of-range years, and non-positive target prices.
+
+### Units and currency
+
+The dataset does not contain explicit unit or currency columns. The application therefore makes the following assumptions visible in the UI and model card:
+
+- mileage: miles;
+- torque: lb-ft;
+- fuel efficiency: MPG, or MPGe for electric vehicles;
+- price: USD.
+
+## Feature engineering
+
+Training and inference use the same deterministic feature builder.
+
+Additional derived features include:
+
+- `vehicle_age = reference_year - Year`;
+- `mileage_per_year = Mileage / max(vehicle_age, 1)`;
+- `log_mileage = log1p(Mileage)`;
+- missing-value indicators for partially missing fields.
+
+The model reference year is frozen at **2026** inside the artifact so that training and serving use the same age calculation.
+
+## Model training
+
+The primary model is `CatBoostRegressor`. Two target formulations are evaluated:
+
+1. raw selling price;
+2. `log1p(Selling_Price)`.
+
+Grouped cross-validation selects the formulation with the lower development MAE.
+
+A hierarchical median baseline is also fitted using:
+
+1. Make + Model + Year;
+2. Make + Model;
+3. Make;
+4. global median.
+
+The trained CatBoost model must improve holdout MAE over this baseline by at least **10%** before the model artifact is accepted.
+
+### Leakage control
+
+Rows are fingerprinted using vehicle identity and pricing fields before splitting. Duplicate fingerprints are kept in a single split so equivalent rows cannot leak across training, calibration, and holdout data.
+
+The pipeline uses separate:
+
+- training data;
+- calibration data;
+- locked interpolation holdout data.
+
+The code explicitly checks that duplicate groups do not overlap across these sets.
+
+## Prediction intervals
+
+VroomValue does not return only a point estimate.
+
+An **80% split-conformal interval** is calibrated from held-out residuals. Calibration uses four prediction-price buckets so uncertainty can vary across the price range.
+
+For tied predictions that produce an empty calibration bucket, the implementation falls back to the global finite-sample conformal quantile instead of generating an undefined interval.
+
+The release gate requires overall holdout coverage between **77% and 83%**.
+
+When an input is classified as low support, the serving layer widens the calibrated half-width by 1.35× and returns a warning with the prediction.
+
+## Current model results
+
+The currently documented training result in `model_card.md` is:
+
+| Metric | Result |
+| --- | ---: |
+| Selected target formulation | `log1p` |
+| Grouped-CV MAE — raw target | $1,063.72 |
+| Grouped-CV MAE — log1p target | $1,024.37 |
+| Baseline holdout MAE | $2,143.13 |
+| CatBoost holdout MAE | $1,116.91 |
+| MAE improvement over baseline | 47.9% |
+| Holdout RMSE | $1,845.98 |
+| Holdout R² | 0.9800 |
+| Holdout WAPE | 9.07% |
+| 80% interval coverage | 81.09% |
+
+A separate Make-Model cold-start stress split holds out complete Make-Model groups. The documented stress result is **$3,890.55 MAE** and **32.91% WAPE** across 1,057 held-out rows, showing that predictions for unseen vehicle families are materially harder than interpolation within supported vehicle groups.
+
+## Model artifacts
+
+Training writes:
+
+```text
+models/auto_price.joblib
+models/auto_price.joblib.sha256
+models/split_manifest.json
+model_card.md
+```
+
+The model bundle contains the fitted CatBoost model, target formulation, reference year, feature schema, conformal interval data, observed support ranges/categories, model metadata, and evaluation metrics.
+
+The API verifies the SHA-256 sidecar before deserializing the model artifact. A missing checksum, mismatched checksum, missing required artifact keys, or load failure keeps readiness false.
+
+## API
+
+The FastAPI service exposes:
+
+### `GET /health/live`
+
+Confirms that the API process is running.
+
+### `GET /health/ready`
+
+Returns ready only when the dataset contract passes and the model artifact can be loaded and verified.
+
+### `GET /v1/metadata`
+
+Returns:
+
+- supported categorical values;
+- Make → Model mappings;
+- observed numeric support ranges;
+- units;
+- the Engine Size validation rule;
+- model version;
+- schema version;
+- model reference year.
+
+### `POST /v1/predictions`
+
+Validates one vehicle and returns:
+
+- prediction ID;
+- request ID;
+- estimated price;
+- 80% prediction interval;
+- support status;
+- warnings;
+- three local SHAP factors;
+- model metadata.
+
+### `POST /v1/feedback`
+
+Associates an actual sale price and sale date with an existing prediction. Duplicate feedback for the same prediction is rejected.
+
+### `GET /v1/admin/metrics`
+
+Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state.
+
+If `ADMIN_TOKEN` is configured, this route requires the token through the `X-Admin-Token` header.
+
+## API validation and request handling
+
+Input models reject:
+
+- unknown JSON fields;
+- NaN and Infinity;
+- blank required strings;
+- values outside numeric bounds;
+- Engine Size values with more than one decimal place;
+- Owners outside 1–5;
+- invalid accident-history values;
+- malformed prediction IDs;
+- feedback sale dates in the future.
+
+Optional blank strings are normalized to unknown values. Location codes are normalized to uppercase.
+
+The API also applies a configurable request-body limit, sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
+
+## Support detection
+
+A prediction is marked `low_confidence` when the request contains an unsupported condition such as:
+
+- a categorical value not observed in training;
+- an unseen Make-Model combination;
+- a numeric value outside the training support range;
+- `Engine_Size = 0.0` for a non-electric vehicle.
+
+These conditions do not produce a server error. The prediction is returned with warnings and a wider interval.
+
+## Persistence
+
+Predictions and user-submitted outcomes are stored separately.
+
+The `predictions` table records:
+
+- prediction ID;
+- timestamp;
+- estimated price;
+- interval bounds;
+- support state;
+- model version.
+
+The `feedback` table records:
+
+- feedback ID;
+- prediction ID;
+- actual sale price;
+- sale date;
+- timestamp.
+
+A unique constraint allows only one feedback record per prediction.
+
+PostgreSQL is used by the application stack. SQLite is used only inside isolated integration tests.
+
+## Frontend
+
+The Next.js frontend provides three primary views:
+
+- the vehicle specification and prediction page;
+- an actual-sale feedback page;
+- a minimal operations/admin metrics page.
+
+The vehicle form retrieves supported metadata from the API, uses cascading Make → Model selection, keeps optional fields explicitly unknown when not provided, and applies the Engine Size step of `0.1` in the browser.
+
+The result panel displays the price estimate, calibrated range, support status, warnings, model version, and local factors.
+
+## Local development
+
+### Requirements
+
+- Python 3.11–3.13; Python 3.12 is used in CI;
+- Node.js 22;
+- Docker and Docker Compose for the full stack.
+
+### Python environment
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
+```
+
+Activate it:
+
+```bash
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+```
+
+Install the project and development dependencies:
+
+```bash
 pip install -e '.[dev]'
+```
+
+### Train the model
+
+```bash
 python -m ml.training.train
 ```
 
-Training must finish with both release gates passing: CatBoost improves holdout MAE over the naive baseline by at least 10%, and the nominal 80% interval covers 77–83% of the locked interpolation holdout. The command writes `models/auto_price.joblib`, `models/split_manifest.json`, updates `model_card.md`, and records the run in local `mlruns/` through MLflow.
+Release training logs the run to the local MLflow file store under `mlruns/`.
 
-Start the stack only after training:
+For test/CI runs where MLflow logging is intentionally skipped:
+
+```bash
+python -m ml.training.train --skip-mlflow
+```
+
+### Run the application
+
+After training has produced the model artifact and checksum:
 
 ```bash
 docker compose up --build
 ```
 
-Open `http://localhost:3000`. API docs are at `http://localhost:8000/docs`.
+The local services are:
 
-## API
+- web UI: `http://localhost:3000`
+- API: `http://localhost:8000`
+- OpenAPI docs: `http://localhost:8000/docs`
 
-- `GET /v1/metadata` — supported categories, Make→Model mapping, numeric support, units, engine-size step, model/schema versions.
-- `POST /v1/predictions` — validated single-vehicle scoring with USD estimate, 80% interval, support label, warnings, and three SHAP factors.
-- `POST /v1/feedback` — verified-sale candidate attached to a prediction id.
-- `GET /v1/admin/metrics` — minimal prediction/feedback/model status summary.
-- `GET /health/live` — process liveness.
-- `GET /health/ready` — model loaded and dataset contract passed.
+## Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgresql+psycopg://vroomvalue:vroomvalue@db:5432/vroomvalue` | SQLAlchemy database connection |
+| `DATASET_PATH` | `data/automobile_dataset.csv` | Dataset used by readiness checks |
+| `MODEL_ARTIFACT_PATH` | `models/auto_price.joblib` | Model bundle loaded by the API |
+| `CORS_ORIGINS` | `http://localhost:3000` | Allowed browser origins |
+| `MAX_BODY_BYTES` | `32768` | Maximum accepted request body size |
+| `ADMIN_TOKEN` | unset | Optional protection for the admin metrics route |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | API base URL used by the frontend |
 
 ## Tests
 
-After training the artifact:
+Run the complete Python test suite after training:
 
 ```bash
 pytest -q
 ```
 
-The data tests explicitly cover the real dataset, missing file, header-only file, missing columns, and the one-decimal `Engine_Size` contract. The model test fails unless the stored training metrics satisfy both release gates. The integration test uses SQLite only as an isolated test persistence backend; the application runtime uses PostgreSQL.
+The automated test areas cover:
 
-## Clean-system acceptance gate
+- schema validation;
+- Engine Size precision;
+- non-finite inputs;
+- deterministic feature engineering;
+- malformed and missing dataset cases;
+- calibration edge cases;
+- release model gates;
+- API prediction flow;
+- feedback persistence.
 
-Before calling the MVP finished:
+Static checks can be run with:
 
-1. Clone the repository into a clean directory with no previous `.venv`, `node_modules`, containers, volumes, `mlruns`, or model artifacts.
-2. Follow only this README to install Python dependencies and run `python -m ml.training.train`.
-3. Run `pytest -q` and confirm every automated layer passes.
-4. Run `docker compose up --build`, submit a valid vehicle, confirm the estimate/range/factors, submit feedback, and confirm `/v1/admin/metrics` increments.
-5. Stop the stack. Temporarily rename `data/automobile_dataset.csv`; confirm training exits non-zero with `Dataset not found at data/automobile_dataset.csv. Add the file and retry.` and `/health/ready` returns 503 with that message. Restore it.
-6. Repeat with a header-only file; confirm the exact no-row failure, restore the real CSV, then perform one final browser journey.
+```bash
+python -m compileall -q apps ml tests
+ruff check apps ml tests
+```
 
-## Repository description
+The frontend production build can be checked with:
 
-Suggested GitHub description:
+```bash
+cd apps/web
+npm install
+npm run build
+```
 
-> Used-car price prediction MVP with CatBoost, FastAPI, Next.js, PostgreSQL, calibrated uncertainty, SHAP explanations, MLflow, and Docker.
+## Continuous integration
 
-## Phase 2 ideas
+GitHub Actions runs three jobs:
 
-Batch CSV scoring, saved scenario comparisons, scheduled retraining, richer drift reporting, authenticated role-based administration, external market data, VIN decoding, image-based condition assessment, and production edge/security infrastructure are intentionally deferred.
+### `python-fast`
+
+- installs the Python project;
+- byte-compiles application, ML, and test modules;
+- runs Ruff;
+- runs unit and data-contract tests.
+
+### `model-and-integration`
+
+- installs the Python project;
+- trains a fresh model against the supplied dataset;
+- enforces model quality and interval-coverage gates;
+- runs model and API integration tests.
+
+### `web`
+
+- installs Node dependencies;
+- builds the Next.js application in production mode.
+
+A change is considered clean only when all three jobs pass.
+
+## Failure behavior
+
+Training stops with a non-zero exit instead of fabricating data when the source dataset is unavailable or unusable.
+
+Examples include:
+
+```text
+Dataset not found at data/automobile_dataset.csv. Add the file and retry.
+```
+
+and:
+
+```text
+Dataset at data/automobile_dataset.csv contains no rows. Add data and retry.
+```
+
+The API exposes the same dataset/model problems through `/health/ready` with HTTP 503 rather than reporting a healthy service without a usable model.
+
+## Known limitations
+
+The supplied dataset does not provide listing dates, transaction-source identifiers, VIN data, image-based condition information, or explicit unit/currency columns. As a result:
+
+- the model cannot directly measure time-based market drift;
+- source-specific bias cannot be quantified;
+- vehicle condition beyond the supplied structured fields is not modeled;
+- units and currency remain documented assumptions;
+- cold-start accuracy is weaker for unseen Make-Model groups than for interpolation within known groups.
+
+The 1.35× widening applied to low-support predictions is a serving heuristic rather than a separately calibrated coverage guarantee.
+
+## License
+
+This repository is released under the MIT License.
