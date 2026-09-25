@@ -3,11 +3,17 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.env.*
 node_modules/
 .next/
 coverage/
 models/*.joblib
+models/*.joblib.sha256
 models/*.json
 !models/.gitkeep
 mlruns/
+playwright-report/
+test-results/
+*.db
+*.log
 .DS_Store
