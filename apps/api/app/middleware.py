@@ -150,6 +150,28 @@ class RequestObservabilityMiddleware:
         ]
         headers.append((name, value))
 
+    @staticmethod
+    def _log_completed(
+        request_id: str,
+        path: str,
+        status_code: int,
+        latency_ms: float,
+        *,
+        interrupted: bool = False,
+    ) -> None:
+        logger.info(
+            json.dumps(
+                {
+                    "event": "request.completed",
+                    "request_id": request_id,
+                    "route": path,
+                    "status_code": status_code,
+                    "latency_ms": round(latency_ms, 2),
+                    "interrupted": interrupted,
+                }
+            )
+        )
+
     async def _record_metric(
         self,
         path: str,
@@ -228,6 +250,13 @@ class RequestObservabilityMiddleware:
             )
             if response_started:
                 await self._record_metric(path, status_code, latency_ms)
+                self._log_completed(
+                    request_id,
+                    path,
+                    status_code,
+                    latency_ms,
+                    interrupted=True,
+                )
                 raise
 
             body = json.dumps(
@@ -257,14 +286,9 @@ class RequestObservabilityMiddleware:
         if response_complete:
             await self._record_metric(path, status_code, latency_ms)
 
-        logger.info(
-            json.dumps(
-                {
-                    "event": "request.completed",
-                    "request_id": request_id,
-                    "route": path,
-                    "status_code": status_code,
-                    "latency_ms": round(latency_ms, 2),
-                }
-            )
+        self._log_completed(
+            request_id,
+            path,
+            status_code,
+            latency_ms,
         )
