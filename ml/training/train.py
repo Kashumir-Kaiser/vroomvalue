@@ -19,7 +19,6 @@ from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from ml.contracts.schema import (
     CATEGORICAL_COLUMNS,
     DATASET_PATH,
-    PARTIALLY_MISSING_COLUMNS,
     REFERENCE_YEAR,
     category_metadata,
     duplicate_fingerprint,
