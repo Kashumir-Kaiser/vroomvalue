@@ -138,3 +138,85 @@ def test_lowercase_electric_does_not_add_non_electric_zero_warning():
     _, warnings = runtime._support(payload)
 
     assert "Engine_Size 0.0 was treated as low-support for a non-electric vehicle." not in warnings
+
+
+
+def test_refresh_if_changed_throttles_file_checks_within_ttl(monkeypatch):
+    runtime = Runtime(refresh_ttl_seconds=1.0)
+    calls = {"dataset": 0, "model": 0}
+    times = iter([10.0, 10.25, 11.25])
+
+    monkeypatch.setattr(
+        "apps.api.app.model_runtime.time.monotonic",
+        lambda: next(times),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_load_dataset_gate",
+        lambda force=False: calls.__setitem__("dataset", calls["dataset"] + 1),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_load_model",
+        lambda force=False: calls.__setitem__("model", calls["model"] + 1),
+    )
+
+    runtime.refresh_if_changed()
+    runtime.refresh_if_changed()
+    runtime.refresh_if_changed()
+
+    assert calls == {"dataset": 2, "model": 2}
+
+
+def test_support_uses_explicit_vehicle_model_mapping():
+    runtime = Runtime()
+    runtime.bundle = {
+        "support": {
+            "categories": {
+                "Make": ["Toyota"],
+                "Model": ["Camry"],
+                "Fuel_Type": ["Petrol"],
+                "Transmission": ["Auto"],
+                "Service_History": ["Full Service"],
+                "Color": ["White"],
+                "Body_Type": ["Sedan"],
+                "Drivetrain": ["FWD"],
+                "Location": ["TX"],
+            },
+            "make_models": {"Toyota": ["Camry"]},
+            "numeric": {
+                "Year": {"min": 2005, "max": 2024},
+                "Engine_Size": {"min": 0.0, "max": 5.7},
+                "Mileage": {"min": 0, "max": 536731},
+                "Horsepower": {"min": 97, "max": 434},
+                "Torque": {"min": 77, "max": 443},
+                "Owners": {"min": 1, "max": 5},
+                "Fuel_Efficiency": {"min": 10, "max": 141},
+            },
+        }
+    }
+    payload = VehicleInput(
+        make="Toyota",
+        model="Corolla",
+        year=2022,
+        fuel_type="Petrol",
+        transmission="Auto",
+        engine_size=2.0,
+        mileage=10000,
+        horsepower=150,
+        torque=150,
+        owners=1,
+        accident_history=0,
+        service_history="Full Service",
+        color="White",
+        body_type="Sedan",
+        drivetrain="FWD",
+        fuel_efficiency=32,
+        location="TX",
+    )
+
+    support, warnings = runtime._support(payload)
+
+    assert support == "low_confidence"
+    assert "Model was not observed in training data." in warnings
+    assert "This Make-Model pairing was not observed in training data." in warnings
