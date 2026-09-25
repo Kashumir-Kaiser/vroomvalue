@@ -255,9 +255,9 @@ Input models reject:
 - malformed prediction IDs;
 - feedback sale dates in the future.
 
-Optional blank strings are normalized to unknown values. Location codes are normalized to uppercase.
+Required text fields are trimmed and blank values return the explicit validation message `Field must not be blank.` Optional blank strings are normalized to unknown values. Location codes are normalized to uppercase.
 
-The API also applies a configurable request-body limit to both fixed-length and streamed/chunked requests, so omitting `Content-Length` does not bypass the limit. CORS wraps the observability and body-limit middleware, so browser clients still receive readable CORS headers on direct 400/413 body-limit responses. Request/security headers are injected at the ASGI response-start boundary rather than by mutating a response object returned from `call_next`. The API sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
+The API also applies a configurable request-body limit to both fixed-length and streamed/chunked requests, so omitting `Content-Length` does not bypass the limit. CORS wraps the observability and body-limit middleware, so browser clients still receive readable CORS headers on direct 400/413 body-limit responses. Request/security headers are injected at the ASGI response-start boundary rather than by mutating a response object returned from `call_next`. Observability emits one `request.completed` record for normal responses and for interrupted responses that had already started streaming. The API sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
 
 ## Support detection
 
@@ -372,6 +372,7 @@ The local services are:
 | `DATABASE_URL` | `postgresql+psycopg://vroomvalue:vroomvalue@db:5432/vroomvalue` | SQLAlchemy database connection |
 | `DATASET_PATH` | `data/automobile_dataset.csv` | Dataset used by readiness checks |
 | `MODEL_ARTIFACT_PATH` | `models/auto_price.joblib` | Model bundle loaded by the API |
+| `RUNTIME_REFRESH_TTL_SECONDS` | `1.0` | Minimum interval between dataset/model filesystem-change checks per API process |
 | `CORS_ORIGINS` | `http://localhost:3000` | Allowed browser origins |
 | `MAX_BODY_BYTES` | `32768` | Maximum accepted request body size |
 | `ADMIN_TOKEN` | unset | Optional protection for the admin metrics route |
@@ -458,7 +459,7 @@ and:
 Dataset at data/automobile_dataset.csv contains no rows. Add data and retry.
 ```
 
-The API exposes the same dataset/model problems through `/health/ready` with HTTP 503 rather than reporting a healthy service without a usable model.
+The API exposes the same dataset/model problems through `/health/ready` with HTTP 503 rather than reporting a healthy service without a usable model. Dataset/model change detection is throttled by a 1-second monotonic TTL by default, avoiding two filesystem `stat()` calls on every request while still allowing near-immediate local artifact refreshes.
 
 ## Known limitations
 
