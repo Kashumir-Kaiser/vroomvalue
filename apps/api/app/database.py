@@ -51,6 +51,14 @@ class FeedbackRecord(Base):
     )
 
 
+INVALID_INPUT_STATUS_CODES = frozenset({400, 413, 422})
+
+
+def is_invalid_input_status(status_code: int) -> bool:
+    """Classify malformed, oversized, or schema-invalid client requests."""
+    return status_code in INVALID_INPUT_STATUS_CODES
+
+
 class ServiceMetricRecord(Base):
     __tablename__ = "service_metrics"
 
@@ -118,7 +126,8 @@ def _metric_update_values(
         "request_count": ServiceMetricRecord.request_count + 1,
         "error_count": ServiceMetricRecord.error_count + int(status_code >= 400),
         "invalid_input_count": (
-            ServiceMetricRecord.invalid_input_count + int(status_code == 422)
+            ServiceMetricRecord.invalid_input_count
+            + int(is_invalid_input_status(status_code))
         ),
         "total_latency_ms": ServiceMetricRecord.total_latency_ms + float(latency_ms),
     }
@@ -143,7 +152,7 @@ def record_request_metric(status_code: int, latency_ms: float) -> None:
                 id=1,
                 request_count=1,
                 error_count=int(status_code >= 400),
-                invalid_input_count=int(status_code == 422),
+                invalid_input_count=int(is_invalid_input_status(status_code)),
                 total_latency_ms=float(latency_ms),
             )
         )

@@ -237,7 +237,7 @@ Associates an actual sale price and sale date with an existing prediction. Dupli
 
 ### `GET /v1/admin/metrics`
 
-Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Metric writes run as response background work rather than as synchronous database round-trips on the async middleware event loop. Health checks and the metrics endpoint itself are excluded from the service-rate counters.
+Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Metric writes run only after the response body has been sent and are offloaded to Starlette's thread pool, avoiding synchronous database work on the async event loop. Health checks and the metrics endpoint itself are excluded from the service-rate counters. The invalid-input rate counts malformed or oversized request statuses 400, 413, and 422; authentication, missing-resource, conflict, and server failures remain part of the broader error rate but not the invalid-input rate.
 
 If `ADMIN_TOKEN` is configured, this route requires the token through the `X-Admin-Token` header.
 
@@ -257,7 +257,7 @@ Input models reject:
 
 Optional blank strings are normalized to unknown values. Location codes are normalized to uppercase.
 
-The API also applies a configurable request-body limit to both fixed-length and streamed/chunked requests, so omitting `Content-Length` does not bypass the limit. CORS wraps the limiter, so browser clients still receive readable CORS headers on direct 400/413 body-limit responses. The API sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
+The API also applies a configurable request-body limit to both fixed-length and streamed/chunked requests, so omitting `Content-Length` does not bypass the limit. CORS wraps the observability and body-limit middleware, so browser clients still receive readable CORS headers on direct 400/413 body-limit responses. Request/security headers are injected at the ASGI response-start boundary rather than by mutating a response object returned from `call_next`. The API sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
 
 ## Support detection
 
