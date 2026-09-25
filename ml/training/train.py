@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -55,6 +56,10 @@ class Metrics:
 
 
 def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Metrics:
+    if len(y_true) == 0 or len(y_true) != len(y_pred):
+        raise ValueError("Metric inputs must be non-empty and have equal length.")
+    if not (np.isfinite(y_true).all() and np.isfinite(y_pred).all()):
+        raise ValueError("Metric inputs must contain only finite values.")
     denom = float(np.abs(y_true).sum())
     return Metrics(
         mae=float(mean_absolute_error(y_true, y_pred)),
@@ -64,7 +69,7 @@ def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Metrics:
     )
 
 
-def _four_way_group_split(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _three_way_group_split(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     indices = np.arange(len(frame))
     groups = duplicate_fingerprint(frame)
     first = GroupShuffleSplit(n_splits=1, test_size=0.10, random_state=RANDOM_SEED)
@@ -82,11 +87,16 @@ def _four_way_group_split(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, 
 
 
 def _predict(model: CatBoostRegressor, x: pd.DataFrame, objective: str) -> np.ndarray:
-    pred = model.predict(x)
-    return np.expm1(pred) if objective == "log1p" else pred
+    pred = np.asarray(model.predict(x), dtype=float)
+    out = np.expm1(pred) if objective == "log1p" else pred
+    if not np.isfinite(out).all():
+        raise RuntimeError("Model produced non-finite predictions.")
+    return out
 
 
 def _fit_model(frame: pd.DataFrame, objective: str) -> CatBoostRegressor:
+    if frame.empty:
+        raise ValueError("Cannot train on an empty frame.")
     x = build_features(frame, REFERENCE_YEAR)
     y = frame["Selling_Price"].to_numpy(dtype=float)
     if objective == "log1p":
@@ -98,7 +108,11 @@ def _fit_model(frame: pd.DataFrame, objective: str) -> CatBoostRegressor:
 
 def choose_objective_by_group_cv(frame: pd.DataFrame) -> tuple[str, dict[str, float]]:
     groups = duplicate_fingerprint(frame)
-    folds = GroupKFold(n_splits=5)
+    unique_groups = groups.nunique()
+    n_splits = min(5, unique_groups)
+    if n_splits < 2:
+        raise ValueError("Too few duplicate groups for grouped cross-validation.")
+    folds = GroupKFold(n_splits=n_splits)
     scores: dict[str, list[float]] = {"raw": [], "log1p": []}
     for train_pos, valid_pos in folds.split(frame, groups=groups):
         train = frame.iloc[train_pos]
@@ -134,29 +148,59 @@ def predict_baseline(baseline: dict[str, Any], frame: pd.DataFrame) -> np.ndarra
     return np.asarray(out)
 
 
+def _conformal_quantile(residuals: np.ndarray, alpha: float) -> float:
+    residuals = np.asarray(residuals, dtype=float)
+    residuals = residuals[np.isfinite(residuals)]
+    if residuals.size == 0:
+        raise ValueError("Cannot calibrate an interval from zero residuals.")
+    n = residuals.size
+    level = min(1.0, math.ceil((n + 1) * (1 - alpha)) / n)
+    return float(np.quantile(residuals, level, method="higher"))
+
+
 def fit_mondrian_interval(
     calibration_pred: np.ndarray,
     calibration_y: np.ndarray,
     bins: int = 4,
     alpha: float = 0.20,
 ) -> dict[str, Any]:
+    calibration_pred = np.asarray(calibration_pred, dtype=float)
+    calibration_y = np.asarray(calibration_y, dtype=float)
+    if calibration_pred.shape != calibration_y.shape or calibration_pred.size == 0:
+        raise ValueError("Calibration predictions and labels must be non-empty and aligned.")
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between 0 and 1.")
+    if bins < 1:
+        raise ValueError("bins must be at least 1.")
+
+    residuals = np.abs(calibration_y - calibration_pred)
+    global_q = _conformal_quantile(residuals, alpha)
     edges = np.quantile(calibration_pred, np.linspace(0, 1, bins + 1)).astype(float)
     edges[0], edges[-1] = -np.inf, np.inf
-    residuals = np.abs(calibration_y - calibration_pred)
     quantiles: list[float] = []
+    bucket_sizes: list[int] = []
     for i in range(bins):
-        mask = (calibration_pred >= edges[i]) & (calibration_pred < edges[i + 1])
+        is_last = i == bins - 1
+        right = calibration_pred <= edges[i + 1] if is_last else calibration_pred < edges[i + 1]
+        mask = (calibration_pred >= edges[i]) & right
         bucket = residuals[mask]
-        n = len(bucket)
-        level = min(1.0, math.ceil((n + 1) * (1 - alpha)) / n)
-        quantiles.append(float(np.quantile(bucket, level, method="higher")))
-    return {"edges": edges.tolist(), "quantiles": quantiles, "alpha": alpha}
+        bucket_sizes.append(int(bucket.size))
+        quantiles.append(_conformal_quantile(bucket, alpha) if bucket.size else global_q)
+    return {
+        "edges": edges.tolist(),
+        "quantiles": quantiles,
+        "bucket_sizes": bucket_sizes,
+        "alpha": alpha,
+        "fallback_global_quantile": global_q,
+    }
 
 
 def interval_half_width(interval: dict[str, Any], predictions: np.ndarray) -> np.ndarray:
     inner_edges = np.asarray(interval["edges"][1:-1], dtype=float)
     buckets = np.digitize(predictions, inner_edges)
     q = np.asarray(interval["quantiles"], dtype=float)
+    if q.size == 0 or not np.isfinite(q).all() or (q < 0).any():
+        raise ValueError("Interval quantiles are invalid.")
     return q[buckets]
 
 
@@ -172,6 +216,35 @@ def model_support(frame: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def cold_start_stress(
+    frame: pd.DataFrame, objective: str
+) -> tuple[Metrics, list[str], int]:
+    groups = frame["Make"].astype(str) + "|" + frame["Model"].astype(str)
+    if groups.nunique() < 2:
+        raise ValueError("Too few Make-Model groups for cold-start evaluation.")
+    splitter = GroupShuffleSplit(
+        n_splits=1, test_size=0.20, random_state=RANDOM_SEED + 2
+    )
+    train_pos, test_pos = next(splitter.split(frame, groups=groups))
+    train = frame.iloc[train_pos]
+    test = frame.iloc[test_pos]
+    heldout_groups = sorted(groups.iloc[test_pos].unique().tolist())
+    if set(groups.iloc[train_pos]) & set(heldout_groups):
+        raise RuntimeError("Make-Model leakage detected in cold-start stress split.")
+    model = _fit_model(train, objective)
+    pred = _predict(model, build_features(test, REFERENCE_YEAR), objective)
+    metrics = regression_metrics(test["Selling_Price"].to_numpy(dtype=float), pred)
+    return metrics, heldout_groups, len(test)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def write_model_card(
     objective: str,
     cv_mae: dict[str, float],
@@ -180,6 +253,9 @@ def write_model_card(
     coverage: float,
     interval: dict[str, Any],
     improvement: float,
+    cold_metrics: Metrics,
+    cold_groups: list[str],
+    cold_rows: int,
 ) -> None:
     content = f"""# VroomValue model card
 
@@ -212,6 +288,13 @@ Duplicate fingerprints are grouped before splitting. Ten percent is a locked int
 - Holdout WAPE: **{model_metrics.wape * 100:.2f}%**
 - Nominal 80% interval holdout coverage: **{coverage * 100:.2f}%**
 
+### Cold-start Make-Model stress view
+
+- Held-out rows: **{cold_rows:,}**
+- Held-out Make-Model groups: **{', '.join(cold_groups)}**
+- Cold-start MAE: **${cold_metrics.mae:,.2f}**
+- Cold-start WAPE: **{cold_metrics.wape * 100:.2f}%**
+
 Intervals use split-conformal absolute residuals with four prediction-price buckets (Mondrian calibration). This keeps the uncertainty width more appropriate across low- and high-price vehicles. Bucket half-widths are: {', '.join(f'${q:,.0f}' for q in interval['quantiles'])}.
 
 ## Limitations
@@ -229,7 +312,7 @@ def main() -> int:
     args = parser.parse_args()
 
     frame = validate_dataset_contract(args.data)
-    train_idx, calibration_idx, test_idx = _four_way_group_split(frame)
+    train_idx, calibration_idx, test_idx = _three_way_group_split(frame)
     train = frame.iloc[train_idx].copy()
     calibration = frame.iloc[calibration_idx].copy()
     test = frame.iloc[test_idx].copy()
@@ -265,6 +348,8 @@ def main() -> int:
             f"MODEL GATE FAILED: 80% interval coverage is {coverage:.3%}; required 77%-83%."
         )
 
+    cold_metrics, cold_groups, cold_rows = cold_start_stress(frame, objective)
+
     artifact_path = Path(args.artifact)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     bundle = {
@@ -285,9 +370,14 @@ def main() -> int:
             "baseline_improvement": improvement,
             "coverage_80": coverage,
             "cv_mae": cv_mae,
+            "cold_start": asdict(cold_metrics),
+            "cold_start_rows": cold_rows,
+            "cold_start_groups": cold_groups,
         },
     }
     joblib.dump(bundle, artifact_path)
+    checksum_path = artifact_path.with_suffix(artifact_path.suffix + ".sha256")
+    checksum_path.write_text(_sha256(artifact_path) + "\n", encoding="ascii")
 
     SPLIT_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     SPLIT_MANIFEST_PATH.write_text(
@@ -303,7 +393,16 @@ def main() -> int:
         encoding="utf-8",
     )
     write_model_card(
-        objective, cv_mae, baseline_metrics, model_metrics, coverage, interval, improvement
+        objective,
+        cv_mae,
+        baseline_metrics,
+        model_metrics,
+        coverage,
+        interval,
+        improvement,
+        cold_metrics,
+        cold_groups,
+        cold_rows,
     )
 
     if not args.skip_mlflow:
@@ -324,9 +423,12 @@ def main() -> int:
                     "baseline_mae": baseline_metrics.mae,
                     "baseline_improvement": improvement,
                     "coverage_80": coverage,
+                    "cold_start_mae": cold_metrics.mae,
+                    "cold_start_wape": cold_metrics.wape,
                 }
             )
             mlflow.log_artifact(str(artifact_path), artifact_path="model")
+            mlflow.log_artifact(str(checksum_path), artifact_path="model")
             mlflow.log_artifact(str(MODEL_CARD_PATH))
             mlflow.log_artifact(str(SPLIT_MANIFEST_PATH))
 
