@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -25,6 +24,11 @@ NUMERIC_COLUMNS = [
     "Year", "Engine_Size", "Mileage", "Horsepower", "Torque", "Owners",
     "Accident_History", "Fuel_Efficiency",
 ]
+NUMERIC_WITH_TARGET = [*NUMERIC_COLUMNS, "Selling_Price"]
+REQUIRED_NON_NULL_COLUMNS = [
+    "Make", "Model", "Year", "Fuel_Type", "Mileage", "Owners",
+    "Body_Type", "Drivetrain", "Selling_Price",
+]
 TARGET_COLUMN = "Selling_Price"
 REFERENCE_YEAR = 2026
 ENGINE_SIZE_MIN = 0.0
@@ -42,6 +46,18 @@ def _one_decimal_or_less(values: pd.Series) -> pd.Series:
     return np.isclose(scaled, np.round(scaled), atol=1e-9)
 
 
+def _coerce_numeric(frame: pd.DataFrame) -> list[str]:
+    parse_failures: list[str] = []
+    for column in NUMERIC_WITH_TARGET:
+        original = frame[column]
+        coerced = pd.to_numeric(original, errors="coerce")
+        bad = original.notna() & coerced.isna()
+        if bad.any():
+            parse_failures.append(column)
+        frame[column] = coerced
+    return parse_failures
+
+
 def validate_dataset_contract(path: str | Path = DATASET_PATH) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
@@ -53,6 +69,10 @@ def validate_dataset_contract(path: str | Path = DATASET_PATH) -> pd.DataFrame:
     except pd.errors.EmptyDataError as exc:
         raise DatasetContractError(
             f"Dataset at {path.as_posix()} contains no rows. Add data and retry."
+        ) from exc
+    except (OSError, UnicodeError, pd.errors.ParserError) as exc:
+        raise DatasetContractError(
+            f"Dataset at {path.as_posix()} could not be parsed as CSV."
         ) from exc
 
     if frame.empty:
@@ -69,12 +89,48 @@ def validate_dataset_contract(path: str | Path = DATASET_PATH) -> pd.DataFrame:
 
     frame = frame[EXPECTED_COLUMNS].copy()
     problems: list[str] = []
-    if not frame["Year"].between(2005, 2024).all():
+
+    parse_failures = _coerce_numeric(frame)
+    if parse_failures:
+        problems.append("Numeric parse failures in: " + ", ".join(sorted(parse_failures)))
+
+    missing_required = [
+        column for column in REQUIRED_NON_NULL_COLUMNS if frame[column].isna().any()
+    ]
+    if missing_required:
+        problems.append(
+            "Required columns contain missing values: " + ", ".join(sorted(missing_required))
+        )
+
+    for column in CATEGORICAL_COLUMNS:
+        mask = frame[column].notna()
+        frame.loc[mask, column] = frame.loc[mask, column].astype(str).str.strip()
+        if column in REQUIRED_NON_NULL_COLUMNS and frame.loc[mask, column].eq("").any():
+            problems.append(f"{column} must not contain blank strings")
+
+    for column in NUMERIC_WITH_TARGET:
+        present = frame[column].dropna().to_numpy(dtype=float)
+        if present.size and not np.isfinite(present).all():
+            problems.append(f"{column} must contain only finite numeric values")
+
+    year = frame["Year"].dropna()
+    if not year.between(2005, 2024).all():
         problems.append("Year must be between 2005 and 2024")
-    if (frame["Mileage"] < 0).any():
+    if not np.isclose(year, np.round(year)).all():
+        problems.append("Year must be an integer")
+
+    mileage = frame["Mileage"].dropna()
+    if (mileage < 0).any():
         problems.append("Mileage must be non-negative")
-    if not frame["Owners"].between(1, 5).all():
+    if not np.isclose(mileage, np.round(mileage)).all():
+        problems.append("Mileage must be an integer")
+
+    owners = frame["Owners"].dropna()
+    if not owners.between(1, 5).all():
         problems.append("Owners must be between 1 and 5")
+    if not np.isclose(owners, np.round(owners)).all():
+        problems.append("Owners must be an integer")
+
     accident = frame["Accident_History"].dropna()
     if not accident.isin([0, 1]).all():
         problems.append("Accident_History must be 0, 1, or missing")
@@ -84,6 +140,9 @@ def validate_dataset_contract(path: str | Path = DATASET_PATH) -> pd.DataFrame:
         problems.append("Engine_Size must be between 0.0 and 5.7")
     if not _one_decimal_or_less(frame["Engine_Size"]).all():
         problems.append("Engine_Size must use at most one decimal place (0.1 increments)")
+
+    if (frame["Selling_Price"].dropna() <= 0).any():
+        problems.append("Selling_Price must be positive")
 
     if problems:
         raise DatasetContractError("; ".join(problems))
