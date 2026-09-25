@@ -41,3 +41,29 @@ def test_engine_size_rejects_more_than_one_decimal(tmp_path: Path):
     base.to_csv(p, index=False)
     with pytest.raises(DatasetContractError, match="at most one decimal place"):
         validate_dataset_contract(p)
+
+def test_required_missing_value_is_rejected(tmp_path: Path):
+    base = validate_dataset_contract("data/automobile_dataset.csv").head(1)
+    base.loc[base.index[0], "Mileage"] = float("nan")
+    p = tmp_path / "automobile_dataset.csv"
+    base.to_csv(p, index=False)
+    with pytest.raises(DatasetContractError, match="Required columns contain missing values"):
+        validate_dataset_contract(p)
+
+
+def test_non_finite_numeric_is_rejected(tmp_path: Path):
+    base = validate_dataset_contract("data/automobile_dataset.csv").head(1)
+    base.loc[base.index[0], "Horsepower"] = float("inf")
+    p = tmp_path / "automobile_dataset.csv"
+    base.to_csv(p, index=False)
+    with pytest.raises(DatasetContractError, match="finite numeric values"):
+        validate_dataset_contract(p)
+
+
+def test_numeric_parse_failure_is_explicit(tmp_path: Path):
+    base = validate_dataset_contract("data/automobile_dataset.csv").head(1)
+    base.loc[base.index[0], "Torque"] = "not-a-number"
+    p = tmp_path / "automobile_dataset.csv"
+    base.to_csv(p, index=False)
+    with pytest.raises(DatasetContractError, match="Numeric parse failures.*Torque"):
+        validate_dataset_contract(p)
