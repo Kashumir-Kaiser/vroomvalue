@@ -96,7 +96,7 @@ class Runtime:
             self.bundle = bundle
             self._explainer = shap.TreeExplainer(bundle["model"])
             self.model_error = None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - fail closed on any artifact-load failure
             self.bundle = None
             self._explainer = None
             self.model_error = f"Model artifact could not be loaded: {exc}"
