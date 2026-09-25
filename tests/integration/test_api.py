@@ -9,7 +9,7 @@ _TEST_DIR = tempfile.TemporaryDirectory()
 _TEST_DB = Path(_TEST_DIR.name) / "vroomvalue-integration.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
 
-from apps.api.app.main import app  # noqa: E402
+from apps.api.app.main import app
 
 VEHICLE = {
     "make": "Toyota",
