@@ -33,27 +33,32 @@ class VehicleInput(StrictInputModel):
         "make",
         "model",
         "fuel_type",
+        "body_type",
+        "drivetrain",
+        mode="before",
+    )
+    @classmethod
+    def normalize_required_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Field must not be blank.")
+        return stripped
+
+    @field_validator(
         "transmission",
         "service_history",
         "color",
-        "body_type",
-        "drivetrain",
         "location",
         mode="before",
     )
     @classmethod
-    def normalize_text_input(cls, value: object) -> object:
+    def normalize_optional_text(cls, value: object) -> object:
         if value is None or not isinstance(value, str):
             return value
         stripped = value.strip()
         return stripped or None
-
-    @field_validator("make", "model", "fuel_type", "body_type", "drivetrain")
-    @classmethod
-    def required_text_must_not_be_blank(cls, value: str) -> str:
-        if not value:
-            raise ValueError("Field must not be blank.")
-        return value
 
     @field_validator("location")
     @classmethod
