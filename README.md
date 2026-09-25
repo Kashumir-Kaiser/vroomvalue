@@ -12,7 +12,7 @@ Given a vehicle description, VroomValue returns:
 - an 80% calibrated prediction interval;
 - an in-distribution or low-confidence support label;
 - warnings when inputs fall outside observed training support;
-- the three strongest local SHAP factors and their direction;
+- up to three local SHAP factors and their direction; if explanation generation fails, pricing still returns with an explicit warning;
 - the model version, schema version, and model date attached to the prediction.
 
 The result is intended for decision support. It is not an appraisal guarantee and the SHAP factors describe model behavior rather than causal price effects.
@@ -176,7 +176,7 @@ The currently documented training result in `model_card.md` is:
 | Holdout WAPE | 9.07% |
 | 80% interval coverage | 81.09% |
 
-A separate Make-Model cold-start stress split holds out complete Make-Model groups. The documented stress result is **$3,890.55 MAE** and **32.91% WAPE** across 1,057 held-out rows, showing that predictions for unseen vehicle families are materially harder than interpolation within supported vehicle groups.
+A separate Make-Model cold-start stress split is derived **only from the 4,400-row primary training partition**, so calibration and locked holdout rows are not reused in that stress metric. The current stress result is **$4,251.48 MAE** and **29.09% WAPE** across 903 held-out cold-start rows, showing that predictions for unseen vehicle families are materially harder than interpolation within supported vehicle groups.
 
 ## Model artifacts
 
@@ -189,9 +189,9 @@ models/split_manifest.json
 model_card.md
 ```
 
-The model bundle contains the fitted CatBoost model, target formulation, reference year, feature schema, conformal interval data, observed support ranges/categories, model metadata, and evaluation metrics.
+The model bundle contains the fitted CatBoost model, target formulation, reference year, **ordered feature schema**, conformal interval data, observed support ranges/categories, model metadata, and evaluation metrics.
 
-The API verifies the SHA-256 sidecar before deserializing the model artifact. A missing checksum, mismatched checksum, missing required artifact keys, or load failure keeps readiness false.
+The API verifies the SHA-256 sidecar before deserializing the model artifact. A missing checksum, mismatched checksum, missing required artifact keys, or load failure keeps readiness false. At inference, generated features are checked against the saved schema: reordered columns are explicitly reindexed to the training order, while missing or unexpected features fail closed instead of being silently passed to the model.
 
 ## API
 
@@ -228,7 +228,7 @@ Validates one vehicle and returns:
 - 80% prediction interval;
 - support status;
 - warnings;
-- three local SHAP factors;
+- up to three local SHAP factors;
 - model metadata.
 
 ### `POST /v1/feedback`
@@ -237,7 +237,7 @@ Associates an actual sale price and sale date with an existing prediction. Dupli
 
 ### `GET /v1/admin/metrics`
 
-Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state.
+Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Health checks and the metrics endpoint itself are excluded from the service-rate counters.
 
 If `ADMIN_TOKEN` is configured, this route requires the token through the `X-Admin-Token` header.
 
@@ -257,7 +257,7 @@ Input models reject:
 
 Optional blank strings are normalized to unknown values. Location codes are normalized to uppercase.
 
-The API also applies a configurable request-body limit, sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
+The API also applies a configurable request-body limit to both fixed-length and streamed/chunked requests, so omitting `Content-Length` does not bypass the limit. It sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
 
 ## Support detection
 
@@ -305,7 +305,7 @@ The Next.js frontend provides three primary views:
 
 The vehicle form retrieves supported metadata from the API, uses cascading Make → Model selection, keeps optional fields explicitly unknown when not provided, and applies the Engine Size step of `0.1` in the browser.
 
-The result panel displays the price estimate, calibrated range, support status, warnings, model version, and local factors.
+The result panel displays the price estimate, calibrated range, support status, warnings, model version, and local factors. SHAP is treated as best-effort explanation logic: an explainer initialization or per-request SHAP failure does not suppress a valid price prediction; the API returns an empty factor list plus an explanation-unavailable warning.
 
 ## Local development
 
@@ -393,6 +393,9 @@ The automated test areas cover:
 - deterministic feature engineering;
 - malformed and missing dataset cases;
 - calibration edge cases;
+- inference feature-order/schema enforcement;
+- SHAP failure fallback behavior;
+- streamed request-body size enforcement;
 - release model gates;
 - API prediction flow;
 - feedback persistence.

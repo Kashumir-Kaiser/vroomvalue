@@ -17,7 +17,9 @@ VroomValue estimates a used vehicle's **Selling_Price** from the supplied 17 pre
 
 Duplicate fingerprints are grouped before splitting. Ten percent is a locked interpolation holdout and ten percent is a dedicated calibration set. Raw-price and `log1p(price)` objectives are compared using 5-fold grouped CV on the development rows. The calibration set is not used to choose the point model.
 
-## Current local training result
+The cold-start Make-Model stress test is derived **only from the main 4,400-row training partition**. Calibration and locked holdout rows are excluded from this stress metric.
+
+## Current validated training result
 
 - Selected objective: **log1p**
 - Grouped CV MAE — raw: **$1,063.72**; log1p: **$1,024.37**
@@ -31,13 +33,20 @@ Duplicate fingerprints are grouped before splitting. Ten percent is a locked int
 
 ### Cold-start Make-Model stress view
 
-- Held-out rows: **1,057**
-- Held-out Make-Model groups: **Audi|A4, Audi|Q5, Chevrolet|Equinox, Honda|Civic, Honda|Pilot, Mercedes-Benz|C-Class, Toyota|RAV4, Volkswagen|Atlas**
-- Cold-start MAE: **$3,890.55**
-- Cold-start WAPE: **32.91%**
+- Source training-pool rows: **4,400**
+- Held-out rows: **903**
+- Held-out Make-Model groups: **BMW|5 Series, Chevrolet|Tahoe, Ford|Mustang, Honda|CR-V, Honda|Pilot, Mercedes-Benz|GLE, Volkswagen|Atlas, Volkswagen|Passat**
+- Cold-start MAE: **$4,251.48**
+- Cold-start WAPE: **29.09%**
 
-Intervals use split-conformal absolute residuals with four prediction-price buckets (Mondrian calibration). This keeps the uncertainty width more appropriate across low- and high-price vehicles. Bucket half-widths are: $117, $1,388, $1,475, $2,758.
+Intervals use split-conformal absolute residuals with four prediction-price buckets (Mondrian calibration). Empty buckets caused by tied predictions fall back to the global finite-sample conformal quantile. The currently validated bucket half-widths are **$117, $1,388, $1,475, and $2,758**.
+
+## Serving safeguards
+
+The artifact stores the exact ordered feature column list from training. Inference reindexes features to that order and rejects missing or unexpected columns rather than relying on incidental DataFrame order. The model artifact is also protected by a SHA-256 sidecar that is verified before deserialization.
+
+SHAP explanations are best-effort. If the explainer cannot initialize or a per-request explanation fails, the price estimate and interval remain available; the response returns no factors and includes an explanation-unavailable warning.
 
 ## Limitations
 
-The dataset has no listing/sale date or source identifier, so this model cannot measure market-time drift or source bias. `Selling_Price` is treated as the target exactly as named in the supplied data; the source does not establish whether it is a listing price or a verified transaction price. Units/currency are assumptions and are stated in the UI. SHAP explanations describe model behavior, not causal price effects.
+The dataset has no listing/sale date or source identifier, so this model cannot measure market-time drift or source bias. `Selling_Price` is treated as the target exactly as named in the supplied data; the source does not establish whether it is a listing price or a verified transaction price. Units/currency are assumptions and are stated in the UI. SHAP explanations describe model behavior, not causal price effects. The 1.35× low-support interval widening is a serving heuristic rather than a separately calibrated coverage guarantee.
