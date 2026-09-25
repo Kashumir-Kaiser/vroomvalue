@@ -1,0 +1,2 @@
+# The training checksum is byte-for-byte. Keep the supplied CSV immune to EOL conversion.
+data/automobile_dataset.csv -text
