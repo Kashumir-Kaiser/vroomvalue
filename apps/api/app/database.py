@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from functools import lru_cache
 
 from sqlalchemy import Date, DateTime, Float, Integer, String, create_engine, func, select, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 
@@ -19,7 +19,7 @@ class PredictionRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
     estimated_price: Mapped[float] = mapped_column(Float)
     interval_lower: Mapped[float] = mapped_column(Float)
@@ -36,7 +36,7 @@ class FeedbackRecord(Base):
     actual_sale_price: Mapped[float] = mapped_column(Float)
     sale_date: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
 
@@ -66,7 +66,7 @@ def database_ready() -> bool:
         with engine().connect() as connection:
             connection.execute(text("SELECT 1"))
         return True
-    except Exception:
+    except SQLAlchemyError:
         return False
 
 
