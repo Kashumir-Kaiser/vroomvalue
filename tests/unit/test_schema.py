@@ -44,8 +44,8 @@ def test_non_finite_numbers_are_rejected(field: str):
         VehicleInput(**{**BASE, field: math.inf})
 
 
-def test_whitespace_required_string_is_rejected():
-    with pytest.raises(ValidationError):
+def test_whitespace_required_string_is_rejected_with_specific_message():
+    with pytest.raises(ValidationError, match="Field must not be blank"):
         VehicleInput(**{**BASE, "make": "   "})
 
 
