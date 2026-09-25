@@ -111,3 +111,14 @@ class PredictionResponse(BaseModel):
     top_factors: list[Factor]
     warnings: list[str]
     model: dict[str, str]
+
+
+class AdminMetricsResponse(BaseModel):
+    prediction_count: int
+    feedback_count: int
+    request_count: int
+    error_rate: float
+    invalid_input_rate: float
+    avg_latency_ms: float
+    current_model_version: str | None
+    readiness: Literal["ready", "not_ready"]

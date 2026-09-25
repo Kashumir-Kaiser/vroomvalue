@@ -237,7 +237,7 @@ Associates an actual sale price and sale date with an existing prediction. Dupli
 
 ### `GET /v1/admin/metrics`
 
-Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Health checks and the metrics endpoint itself are excluded from the service-rate counters.
+Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Metric writes run as response background work rather than as synchronous database round-trips on the async middleware event loop. Health checks and the metrics endpoint itself are excluded from the service-rate counters.
 
 If `ADMIN_TOKEN` is configured, this route requires the token through the `X-Admin-Token` header.
 
@@ -257,7 +257,7 @@ Input models reject:
 
 Optional blank strings are normalized to unknown values. Location codes are normalized to uppercase.
 
-The API also applies a configurable request-body limit to both fixed-length and streamed/chunked requests, so omitting `Content-Length` does not bypass the limit. It sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
+The API also applies a configurable request-body limit to both fixed-length and streamed/chunked requests, so omitting `Content-Length` does not bypass the limit. CORS wraps the limiter, so browser clients still receive readable CORS headers on direct 400/413 body-limit responses. The API sanitizes externally supplied request IDs, returns request IDs in responses, and adds basic defensive response headers.
 
 ## Support detection
 
@@ -395,7 +395,9 @@ The automated test areas cover:
 - calibration edge cases;
 - inference feature-order/schema enforcement;
 - SHAP failure fallback behavior;
-- streamed request-body size enforcement;
+- streamed request-body size enforcement and CORS preservation on 413 responses;
+- cold-start isolation to the primary training partition;
+- explicit admin metrics response schema;
 - release model gates;
 - API prediction flow;
 - feedback persistence.

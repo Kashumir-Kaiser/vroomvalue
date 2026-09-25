@@ -9,7 +9,7 @@ _TEST_DIR = tempfile.TemporaryDirectory()
 _TEST_DB = Path(_TEST_DIR.name) / "vroomvalue-integration.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
 
-from apps.api.app.main import app
+from apps.api.app.main import MAX_BODY_BYTES, app
 
 VEHICLE = {
     "make": "Toyota",
@@ -84,3 +84,29 @@ def test_engine_size_validation_is_422():
             json={**VEHICLE, "engine_size": 2.55},
         )
         assert response.status_code == 422
+
+
+
+def test_oversize_response_preserves_cors_headers():
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/predictions",
+            content=b"x" * (MAX_BODY_BYTES + 1),
+            headers={
+                "content-type": "application/json",
+                "origin": "http://localhost:3000",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.json()["detail"] == f"Request body exceeds {MAX_BODY_BYTES} bytes."
+
+
+def test_admin_metrics_openapi_schema_is_explicit():
+    schema = app.openapi()
+    response_schema = schema["paths"]["/v1/admin/metrics"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+
+    assert response_schema["$ref"].endswith("/AdminMetricsResponse")

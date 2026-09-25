@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.background import BackgroundTask, BackgroundTasks
 
 from apps.api.app.database import (
     FeedbackRecord,
@@ -25,7 +26,12 @@ from apps.api.app.database import (
 )
 from apps.api.app.middleware import BodySizeLimitMiddleware
 from apps.api.app.model_runtime import runtime
-from apps.api.app.schemas import FeedbackInput, PredictionResponse, VehicleInput
+from apps.api.app.schemas import (
+    AdminMetricsResponse,
+    FeedbackInput,
+    PredictionResponse,
+    VehicleInput,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("vroomvalue.api")
@@ -68,6 +74,25 @@ def _persist_request_metric(path: str, status_code: int, latency_ms: float) -> N
         )
 
 
+def _attach_metric_background(
+    response,
+    path: str,
+    status_code: int,
+    latency_ms: float,
+) -> None:
+    """Persist metrics after the response body is sent, off the event loop."""
+    if path in METRICS_EXCLUDED_PATHS:
+        return
+
+    task = BackgroundTask(_persist_request_metric, path, status_code, latency_ms)
+    if response.background is None:
+        response.background = task
+    elif isinstance(response.background, BackgroundTasks):
+        response.background.tasks.append(task)
+    else:
+        response.background = BackgroundTasks([response.background, task])
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     runtime.load(force=True)
@@ -84,13 +109,9 @@ origins = [
     for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
     if origin.strip()
 ]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["content-type", "x-request-id", "x-admin-token"],
-)
+
+# The body limiter sits inside CORS so even direct 400/413 responses include
+# browser-readable CORS headers. Request logging sits between them.
 app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
 
 
@@ -104,7 +125,6 @@ async def request_guard_and_log(request: Request, call_next):
         response = await call_next(request)
     except Exception:
         latency_ms = (time.perf_counter() - started) * 1000
-        _persist_request_metric(request.url.path, 500, latency_ms)
         logger.exception(
             json.dumps(
                 {
@@ -115,14 +135,26 @@ async def request_guard_and_log(request: Request, call_next):
                 }
             )
         )
-        return JSONResponse(
+        response = JSONResponse(
             status_code=500,
             content={"detail": "Internal server error.", "request_id": request_id},
             headers={"x-request-id": request_id},
         )
+        _attach_metric_background(
+            response,
+            request.url.path,
+            500,
+            latency_ms,
+        )
+        return response
 
     latency_ms = (time.perf_counter() - started) * 1000
-    _persist_request_metric(request.url.path, response.status_code, latency_ms)
+    _attach_metric_background(
+        response,
+        request.url.path,
+        response.status_code,
+        latency_ms,
+    )
 
     response.headers["x-request-id"] = request_id
     response.headers["x-content-type-options"] = "nosniff"
@@ -140,6 +172,16 @@ async def request_guard_and_log(request: Request, call_next):
         )
     )
     return response
+
+
+# Added last so it is the outermost user middleware.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["content-type", "x-request-id", "x-admin-token"],
+)
 
 
 @app.get("/health/live")
@@ -255,8 +297,8 @@ def feedback(payload: FeedbackInput):
     return {"status": "accepted"}
 
 
-@app.get("/v1/admin/metrics")
-def metrics(x_admin_token: str | None = Header(default=None)):
+@app.get("/v1/admin/metrics", response_model=AdminMetricsResponse)
+def metrics(x_admin_token: str | None = Header(default=None)) -> AdminMetricsResponse:
     _require_admin_token(x_admin_token)
     try:
         data = admin_metrics()
@@ -266,8 +308,10 @@ def metrics(x_admin_token: str | None = Header(default=None)):
             detail="Metrics storage is unavailable.",
         ) from exc
 
-    return {
+    return AdminMetricsResponse(
         **data,
-        "current_model_version": runtime.bundle["model_version"] if runtime.bundle else None,
-        "readiness": "ready" if not runtime.ready_error() else "not_ready",
-    }
+        current_model_version=(
+            runtime.bundle["model_version"] if runtime.bundle else None
+        ),
+        readiness="ready" if not runtime.ready_error() else "not_ready",
+    )

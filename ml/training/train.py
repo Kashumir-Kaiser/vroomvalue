@@ -244,6 +244,29 @@ def cold_start_stress(
     return metrics, heldout_groups, len(test)
 
 
+def cold_start_from_primary_training_split(
+    frame: pd.DataFrame,
+    train_idx: np.ndarray,
+    calibration_idx: np.ndarray,
+    test_idx: np.ndarray,
+    objective: str,
+) -> tuple[Metrics, list[str], int, int]:
+    """Run cold-start stress only on the primary training partition."""
+    train_ids = set(np.asarray(train_idx, dtype=int).tolist())
+    calibration_ids = set(np.asarray(calibration_idx, dtype=int).tolist())
+    test_ids = set(np.asarray(test_idx, dtype=int).tolist())
+    if (
+        train_ids & calibration_ids
+        or train_ids & test_ids
+        or calibration_ids & test_ids
+    ):
+        raise RuntimeError("Primary evaluation partitions overlap.")
+
+    pool = frame.iloc[np.asarray(train_idx, dtype=int)].copy()
+    metrics, groups, heldout_rows = cold_start_stress(pool, objective)
+    return metrics, groups, heldout_rows, len(pool)
+
+
 def write_model_card(
     dataset_rows: int,
     cold_pool_rows: int,
@@ -352,7 +375,15 @@ def main() -> int:
             f"MODEL GATE FAILED: 80% interval coverage is {coverage:.3%}; required 77%-83%."
         )
 
-    cold_metrics, cold_groups, cold_rows = cold_start_stress(train, objective)
+    cold_metrics, cold_groups, cold_rows, cold_pool_rows = (
+        cold_start_from_primary_training_split(
+            frame,
+            train_idx,
+            calibration_idx,
+            test_idx,
+            objective,
+        )
+    )
 
     artifact_path = Path(args.artifact)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -375,7 +406,7 @@ def main() -> int:
             "coverage_80": coverage,
             "cv_mae": cv_mae,
             "cold_start": asdict(cold_metrics),
-            "cold_start_pool_rows": len(train),
+            "cold_start_pool_rows": cold_pool_rows,
             "cold_start_rows": cold_rows,
             "cold_start_groups": cold_groups,
         },
@@ -398,7 +429,7 @@ def main() -> int:
     )
     write_model_card(
         len(frame),
-        len(train),
+        cold_pool_rows,
         objective,
         cv_mae,
         baseline_metrics,
