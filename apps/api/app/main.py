@@ -102,7 +102,7 @@ async def request_guard_and_log(request: Request, call_next):
 
     try:
         response = await call_next(request)
-    except Exception:  # noqa: BLE001 - top-level request boundary must fail closed
+    except Exception:
         latency_ms = (time.perf_counter() - started) * 1000
         _persist_request_metric(request.url.path, 500, latency_ms)
         logger.exception(
