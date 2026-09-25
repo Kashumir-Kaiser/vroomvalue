@@ -4,7 +4,18 @@ import os
 from datetime import UTC, date, datetime
 from functools import lru_cache
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, create_engine, func, select, text, update
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    create_engine,
+    func,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
