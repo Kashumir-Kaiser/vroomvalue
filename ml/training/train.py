@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -370,7 +370,7 @@ def main() -> int:
         "model_name": "auto_price",
         "model_version": "1",
         "schema_version": "1.0",
-        "as_of_date": str(date.today()),
+        "as_of_date": str(datetime.now(UTC).date()),
         "metrics": {
             "baseline": asdict(baseline_metrics),
             "holdout": asdict(model_metrics),
