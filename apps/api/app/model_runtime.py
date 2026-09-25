@@ -89,7 +89,7 @@ class Runtime:
             self.model_error = None
             try:
                 self._explainer = shap.TreeExplainer(bundle["model"])
-            except Exception:  # noqa: BLE001 - explanation failure must not disable pricing
+            except Exception:
                 self._explainer = None
                 logger.exception("SHAP explainer initialization failed; pricing remains available.")
         except Exception as exc:  # noqa: BLE001 - fail closed on artifact-load failures
@@ -231,7 +231,7 @@ class Runtime:
                 }
                 for index in order
             ]
-        except Exception:  # noqa: BLE001 - explanation failure must not fail pricing
+        except Exception:
             logger.exception("SHAP explanation failed for a prediction.")
             warnings.append("Explanation unavailable for this prediction.")
             return []
