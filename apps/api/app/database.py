@@ -51,6 +51,8 @@ class FeedbackRecord(Base):
     )
 
 
+# 400 is intentionally treated as invalid input for malformed client requests at
+# our HTTP boundary (for example, an invalid Content-Length header).
 INVALID_INPUT_STATUS_CODES = frozenset({400, 413, 422})
 
 
