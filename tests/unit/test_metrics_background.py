@@ -104,3 +104,48 @@ async def test_413_reaches_metric_pipeline_without_response_mutation():
 
     assert sent[0]["status"] == 413
     assert calls == [("/v1/predictions", 413)]
+
+
+
+@pytest.mark.asyncio
+async def test_interrupted_started_response_still_logs_completion(caplog):
+    async def endpoint(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise RuntimeError("stream failed")
+
+    def recorder(path: str, status_code: int, latency_ms: float) -> None:
+        return None
+
+    middleware = RequestObservabilityMiddleware(
+        endpoint,
+        metric_recorder=recorder,
+        excluded_paths=set(),
+        request_id_pattern=r"^[A-Za-z0-9._-]{1,64}$",
+    )
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        return None
+
+    with caplog.at_level("INFO", logger="vroomvalue.api"):
+        with pytest.raises(RuntimeError, match="stream failed"):
+            await middleware(
+                {
+                    "type": "http",
+                    "path": "/v1/predictions",
+                    "headers": [],
+                    "state": {},
+                },
+                receive,
+                send,
+            )
+
+    completed = [
+        record.message
+        for record in caplog.records
+        if '"event": "request.completed"' in record.message
+    ]
+    assert len(completed) == 1
+    assert '"interrupted": true' in completed[0]
