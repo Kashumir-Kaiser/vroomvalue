@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 from pathlib import Path
@@ -18,12 +19,20 @@ MODEL_PATH = Path(os.getenv("MODEL_ARTIFACT_PATH", "models/auto_price.joblib"))
 DATA_PATH = Path(os.getenv("DATASET_PATH", str(DATASET_PATH)))
 
 
-def _file_signature(path: Path) -> tuple[int, int] | None:
+def _file_signature(path: Path) -> tuple[int, int, int] | None:
     try:
         stat = path.stat()
     except FileNotFoundError:
         return None
-    return stat.st_mtime_ns, stat.st_size
+    return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class Runtime:
@@ -32,8 +41,8 @@ class Runtime:
         self.dataset_error: str | None = None
         self.model_error: str | None = None
         self._explainer: shap.TreeExplainer | None = None
-        self._dataset_signature: tuple[int, int] | None = None
-        self._model_signature: tuple[int, int] | None = None
+        self._dataset_signature: tuple[int, int, int] | None = None
+        self._model_signature: tuple[int, int, int] | None = None
         self._lock = threading.RLock()
 
     def _load_dataset_gate(self, *, force: bool = False) -> None:
@@ -61,7 +70,21 @@ class Runtime:
             self._model_signature = None
             return
 
+        checksum_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".sha256")
+        if not checksum_path.exists():
+            self.model_error = (
+                f"Model checksum not found at {checksum_path.as_posix()}. Retrain the model and retry."
+            )
+            self.bundle = None
+            self._explainer = None
+            self._model_signature = signature
+            return
+
         try:
+            expected_checksum = checksum_path.read_text(encoding="ascii").strip().lower()
+            actual_checksum = _sha256(MODEL_PATH)
+            if not expected_checksum or not hmac_compare_digest(actual_checksum, expected_checksum):
+                raise ValueError("artifact checksum verification failed")
             bundle = joblib.load(MODEL_PATH)
             required = {
                 "model", "objective", "reference_year", "interval", "support",
@@ -229,6 +252,12 @@ class Runtime:
             "warnings": warnings,
             "top_factors": top_factors,
         }
+
+
+def hmac_compare_digest(left: str, right: str) -> bool:
+    # Imported lazily here to keep checksum comparison explicit and constant-time.
+    import hmac
+    return hmac.compare_digest(left, right)
 
 
 runtime = Runtime()
