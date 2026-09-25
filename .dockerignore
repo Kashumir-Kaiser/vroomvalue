@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+mlruns
+apps/web/node_modules
+apps/web/.next
+test_vroomvalue.db
+.env
+.env.*
