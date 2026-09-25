@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import threading
 from pathlib import Path
@@ -12,6 +11,7 @@ import pandas as pd
 import shap
 
 from apps.api.app.schemas import VehicleInput
+from ml.artifacts import verify_checksum
 from ml.contracts.schema import DATASET_PATH, DatasetContractError, validate_dataset_contract
 from ml.features.build import build_features
 
@@ -25,14 +25,6 @@ def _file_signature(path: Path) -> tuple[int, int, int] | None:
     except FileNotFoundError:
         return None
     return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class Runtime:
@@ -70,21 +62,8 @@ class Runtime:
             self._model_signature = None
             return
 
-        checksum_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".sha256")
-        if not checksum_path.exists():
-            self.model_error = (
-                f"Model checksum not found at {checksum_path.as_posix()}. Retrain the model and retry."
-            )
-            self.bundle = None
-            self._explainer = None
-            self._model_signature = signature
-            return
-
         try:
-            expected_checksum = checksum_path.read_text(encoding="ascii").strip().lower()
-            actual_checksum = _sha256(MODEL_PATH)
-            if not expected_checksum or not hmac_compare_digest(actual_checksum, expected_checksum):
-                raise ValueError("artifact checksum verification failed")
+            verify_checksum(MODEL_PATH)
             bundle = joblib.load(MODEL_PATH)
             required = {
                 "model", "objective", "reference_year", "interval", "support",
@@ -252,12 +231,6 @@ class Runtime:
             "warnings": warnings,
             "top_factors": top_factors,
         }
-
-
-def hmac_compare_digest(left: str, right: str) -> bool:
-    # Imported lazily here to keep checksum comparison explicit and constant-time.
-    import hmac
-    return hmac.compare_digest(left, right)
 
 
 runtime = Runtime()

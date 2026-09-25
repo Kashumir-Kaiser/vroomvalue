@@ -1,0 +1,2 @@
+# Preserve the supplied dataset byte-for-byte across operating systems.
+data/automobile_dataset.csv -text

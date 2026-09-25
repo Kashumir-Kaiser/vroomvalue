@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -16,6 +15,7 @@ from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 
+from ml.artifacts import write_checksum
 from ml.contracts.schema import (
     CATEGORICAL_COLUMNS,
     DATASET_PATH,
@@ -244,14 +244,6 @@ def cold_start_stress(
     return metrics, heldout_groups, len(test)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def write_model_card(
     objective: str,
     cv_mae: dict[str, float],
@@ -383,8 +375,7 @@ def main() -> int:
         },
     }
     joblib.dump(bundle, artifact_path)
-    checksum_path = artifact_path.with_suffix(artifact_path.suffix + ".sha256")
-    checksum_path.write_text(_sha256(artifact_path) + "\n", encoding="ascii")
+    checksum_path = write_checksum(artifact_path)
 
     SPLIT_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     SPLIT_MANIFEST_PATH.write_text(
