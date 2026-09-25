@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -18,31 +18,74 @@ MODEL_PATH = Path(os.getenv("MODEL_ARTIFACT_PATH", "models/auto_price.joblib"))
 DATA_PATH = Path(os.getenv("DATASET_PATH", str(DATASET_PATH)))
 
 
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
 class Runtime:
     def __init__(self) -> None:
         self.bundle: dict[str, Any] | None = None
         self.dataset_error: str | None = None
         self.model_error: str | None = None
         self._explainer: shap.TreeExplainer | None = None
+        self._dataset_signature: tuple[int, int] | None = None
+        self._model_signature: tuple[int, int] | None = None
+        self._lock = threading.RLock()
 
-    def load(self) -> None:
+    def _load_dataset_gate(self, *, force: bool = False) -> None:
+        signature = _file_signature(DATA_PATH)
+        if not force and signature == self._dataset_signature:
+            return
         try:
             validate_dataset_contract(DATA_PATH)
             self.dataset_error = None
         except DatasetContractError as exc:
             self.dataset_error = str(exc)
+        self._dataset_signature = signature
 
-        if not MODEL_PATH.exists():
-            self.model_error = f"Model artifact not found at {MODEL_PATH.as_posix()}. Train the model and retry."
-            self.bundle = None
+    def _load_model(self, *, force: bool = False) -> None:
+        signature = _file_signature(MODEL_PATH)
+        if not force and signature == self._model_signature:
             return
-        try:
-            self.bundle = joblib.load(MODEL_PATH)
-            self._explainer = shap.TreeExplainer(self.bundle["model"])
-            self.model_error = None
-        except Exception as exc:  # fail closed: readiness reports the exact load problem
+
+        if signature is None:
+            self.model_error = (
+                f"Model artifact not found at {MODEL_PATH.as_posix()}. Train the model and retry."
+            )
             self.bundle = None
+            self._explainer = None
+            self._model_signature = None
+            return
+
+        try:
+            bundle = joblib.load(MODEL_PATH)
+            required = {
+                "model", "objective", "reference_year", "interval", "support",
+                "model_name", "model_version", "schema_version", "as_of_date",
+            }
+            missing = sorted(required.difference(bundle))
+            if missing:
+                raise ValueError(f"artifact missing keys: {', '.join(missing)}")
+            self.bundle = bundle
+            self._explainer = shap.TreeExplainer(bundle["model"])
+            self.model_error = None
+        except Exception as exc:
+            self.bundle = None
+            self._explainer = None
             self.model_error = f"Model artifact could not be loaded: {exc}"
+        self._model_signature = signature
+
+    def load(self, *, force: bool = False) -> None:
+        with self._lock:
+            self._load_dataset_gate(force=force)
+            self._load_model(force=force)
+
+    def refresh_if_changed(self) -> None:
+        self.load(force=False)
 
     def ready_error(self) -> str | None:
         return self.dataset_error or self.model_error
@@ -58,7 +101,12 @@ class Runtime:
             "field_rules": {
                 "engine_size": {"min": 0.0, "max": 5.7, "step": 0.1, "nullable": True},
             },
-            "units": {"mileage": "mile", "torque": "lb-ft", "fuel_efficiency": "MPG/MPGe", "currency": "USD"},
+            "units": {
+                "mileage": "mile",
+                "torque": "lb-ft",
+                "fuel_efficiency": "MPG/MPGe",
+                "currency": "USD",
+            },
             "reference_year": self.bundle["reference_year"],
             "schema_version": self.bundle["schema_version"],
             "model_version": self.bundle["model_version"],
@@ -69,10 +117,16 @@ class Runtime:
         support = self.bundle["support"]
         warnings: list[str] = []
         values = payload.model_dump()
+
         field_map = {
-            "make": "Make", "model": "Model", "fuel_type": "Fuel_Type",
-            "transmission": "Transmission", "service_history": "Service_History",
-            "color": "Color", "body_type": "Body_Type", "drivetrain": "Drivetrain",
+            "make": "Make",
+            "model": "Model",
+            "fuel_type": "Fuel_Type",
+            "transmission": "Transmission",
+            "service_history": "Service_History",
+            "color": "Color",
+            "body_type": "Body_Type",
+            "drivetrain": "Drivetrain",
             "location": "Location",
         }
         for request_field, training_field in field_map.items():
@@ -80,12 +134,19 @@ class Runtime:
             if value is not None and value not in support["categories"][training_field]:
                 warnings.append(f"{training_field} was not observed in training data.")
 
-        if payload.make in support["make_models"] and payload.model not in support["make_models"][payload.make]:
+        if (
+            payload.make in support["make_models"]
+            and payload.model not in support["make_models"][payload.make]
+        ):
             warnings.append("This Make-Model pairing was not observed in training data.")
 
         numeric_map = {
-            "year": "Year", "engine_size": "Engine_Size", "mileage": "Mileage",
-            "horsepower": "Horsepower", "torque": "Torque", "owners": "Owners",
+            "year": "Year",
+            "engine_size": "Engine_Size",
+            "mileage": "Mileage",
+            "horsepower": "Horsepower",
+            "torque": "Torque",
+            "owners": "Owners",
             "fuel_efficiency": "Fuel_Efficiency",
         }
         for request_field, training_field in numeric_map.items():
@@ -97,35 +158,55 @@ class Runtime:
                 warnings.append(f"{training_field} is outside the observed training range.")
 
         if payload.engine_size == 0 and payload.fuel_type != "Electric":
-            warnings.append("Engine_Size 0.0 was treated as low-support for a non-electric vehicle.")
+            warnings.append(
+                "Engine_Size 0.0 was treated as low-support for a non-electric vehicle."
+            )
         return ("low_confidence" if warnings else "in_distribution", warnings)
 
     def predict(self, payload: VehicleInput) -> dict[str, Any]:
         if not self.bundle:
             raise RuntimeError(self.ready_error() or "Model unavailable")
+
         row = pd.DataFrame(
             [{
-                "Make": payload.make, "Model": payload.model, "Year": payload.year,
-                "Fuel_Type": payload.fuel_type, "Transmission": payload.transmission,
-                "Engine_Size": payload.engine_size, "Mileage": payload.mileage,
-                "Horsepower": payload.horsepower, "Torque": payload.torque,
-                "Owners": payload.owners, "Accident_History": payload.accident_history,
-                "Service_History": payload.service_history, "Color": payload.color,
-                "Body_Type": payload.body_type, "Drivetrain": payload.drivetrain,
-                "Fuel_Efficiency": payload.fuel_efficiency, "Location": payload.location,
+                "Make": payload.make,
+                "Model": payload.model,
+                "Year": payload.year,
+                "Fuel_Type": payload.fuel_type,
+                "Transmission": payload.transmission,
+                "Engine_Size": payload.engine_size,
+                "Mileage": payload.mileage,
+                "Horsepower": payload.horsepower,
+                "Torque": payload.torque,
+                "Owners": payload.owners,
+                "Accident_History": payload.accident_history,
+                "Service_History": payload.service_history,
+                "Color": payload.color,
+                "Body_Type": payload.body_type,
+                "Drivetrain": payload.drivetrain,
+                "Fuel_Efficiency": payload.fuel_efficiency,
+                "Location": payload.location,
             }]
         )
         x = build_features(row, self.bundle["reference_year"])
         raw = float(self.bundle["model"].predict(x)[0])
         estimate = float(np.expm1(raw) if self.bundle["objective"] == "log1p" else raw)
+        if not np.isfinite(estimate):
+            raise RuntimeError("Model produced a non-finite estimate.")
         estimate = max(0.0, estimate)
 
         interval = self.bundle["interval"]
-        bucket = int(np.digitize([estimate], np.asarray(interval["edges"][1:-1], dtype=float))[0])
+        bucket = int(
+            np.digitize([estimate], np.asarray(interval["edges"][1:-1], dtype=float))[0]
+        )
         half_width = float(interval["quantiles"][bucket])
+        if not np.isfinite(half_width) or half_width < 0:
+            raise RuntimeError("Model interval calibration is invalid.")
+
         support, warnings = self._support(payload)
         if support == "low_confidence":
             half_width *= 1.35
+
         lower = max(0.0, estimate - half_width)
         upper = estimate + half_width
 
