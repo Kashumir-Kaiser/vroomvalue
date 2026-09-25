@@ -83,6 +83,12 @@ def _three_way_group_split(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray,
     )
     train = train_cal[train_pos]
     calibration = train_cal[calibration_pos]
+
+    train_groups = set(groups.iloc[train])
+    calibration_groups = set(groups.iloc[calibration])
+    test_groups = set(groups.iloc[test])
+    if train_groups & calibration_groups or train_groups & test_groups or calibration_groups & test_groups:
+        raise RuntimeError("Duplicate-group leakage detected across evaluation splits.")
     return train, calibration, test
 
 
@@ -208,6 +214,8 @@ def model_support(frame: pd.DataFrame) -> dict[str, Any]:
     numeric = {}
     for col in ["Year", "Engine_Size", "Mileage", "Horsepower", "Torque", "Owners", "Fuel_Efficiency"]:
         series = frame[col].dropna().astype(float)
+        if series.empty:
+            continue
         numeric[col] = {"min": float(series.min()), "max": float(series.max())}
     return {
         "categories": category_metadata(frame),
@@ -295,7 +303,7 @@ Duplicate fingerprints are grouped before splitting. Ten percent is a locked int
 - Cold-start MAE: **${cold_metrics.mae:,.2f}**
 - Cold-start WAPE: **{cold_metrics.wape * 100:.2f}%**
 
-Intervals use split-conformal absolute residuals with four prediction-price buckets (Mondrian calibration). This keeps the uncertainty width more appropriate across low- and high-price vehicles. Bucket half-widths are: {', '.join(f'${q:,.0f}' for q in interval['quantiles'])}.
+Intervals use split-conformal absolute residuals with four prediction-price buckets (Mondrian calibration). Empty buckets caused by tied predictions fall back to the global finite-sample conformal quantile. Bucket half-widths are: {', '.join(f'${q:,.0f}' for q in interval['quantiles'])}.
 
 ## Limitations
 
