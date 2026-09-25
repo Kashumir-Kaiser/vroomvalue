@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,30 @@ from ml.features.build import build_features
 
 MODEL_PATH = Path(os.getenv("MODEL_ARTIFACT_PATH", "models/auto_price.joblib"))
 DATA_PATH = Path(os.getenv("DATASET_PATH", str(DATASET_PATH)))
+REFRESH_TTL_SECONDS = max(
+    0.0,
+    float(os.getenv("RUNTIME_REFRESH_TTL_SECONDS", "1.0")),
+)
+CATEGORICAL_SUPPORT_FIELDS = {
+    "make": "Make",
+    "model": "Model",
+    "fuel_type": "Fuel_Type",
+    "transmission": "Transmission",
+    "service_history": "Service_History",
+    "color": "Color",
+    "body_type": "Body_Type",
+    "drivetrain": "Drivetrain",
+    "location": "Location",
+}
+NUMERIC_SUPPORT_FIELDS = {
+    "year": "Year",
+    "engine_size": "Engine_Size",
+    "mileage": "Mileage",
+    "horsepower": "Horsepower",
+    "torque": "Torque",
+    "owners": "Owners",
+    "fuel_efficiency": "Fuel_Efficiency",
+}
 logger = logging.getLogger("vroomvalue.runtime")
 
 
@@ -30,13 +55,19 @@ def _file_signature(path: Path) -> tuple[int, int, int] | None:
 
 
 class Runtime:
-    def __init__(self) -> None:
+    def __init__(self, refresh_ttl_seconds: float | None = None) -> None:
         self.bundle: dict[str, Any] | None = None
         self.dataset_error: str | None = None
         self.model_error: str | None = None
         self._explainer: shap.TreeExplainer | None = None
         self._dataset_signature: tuple[int, int, int] | None = None
         self._model_signature: tuple[int, int, int] | None = None
+        self._refresh_ttl_seconds = (
+            REFRESH_TTL_SECONDS
+            if refresh_ttl_seconds is None
+            else max(0.0, float(refresh_ttl_seconds))
+        )
+        self._last_refresh_check: float | None = None
         self._lock = threading.RLock()
 
     def _load_dataset_gate(self, *, force: bool = False) -> None:
@@ -102,9 +133,19 @@ class Runtime:
         with self._lock:
             self._load_dataset_gate(force=force)
             self._load_model(force=force)
+            self._last_refresh_check = time.monotonic()
 
     def refresh_if_changed(self) -> None:
-        self.load(force=False)
+        now = time.monotonic()
+        with self._lock:
+            if (
+                self._last_refresh_check is not None
+                and now - self._last_refresh_check < self._refresh_ttl_seconds
+            ):
+                return
+            self._last_refresh_check = now
+            self._load_dataset_gate(force=False)
+            self._load_model(force=False)
 
     def ready_error(self) -> str | None:
         return self.dataset_error or self.model_error
@@ -135,21 +176,9 @@ class Runtime:
         assert self.bundle
         support = self.bundle["support"]
         warnings: list[str] = []
-        values = payload.model_dump()
 
-        field_map = {
-            "make": "Make",
-            "model": "Model",
-            "fuel_type": "Fuel_Type",
-            "transmission": "Transmission",
-            "service_history": "Service_History",
-            "color": "Color",
-            "body_type": "Body_Type",
-            "drivetrain": "Drivetrain",
-            "location": "Location",
-        }
-        for request_field, training_field in field_map.items():
-            value = values[request_field]
+        for request_field, training_field in CATEGORICAL_SUPPORT_FIELDS.items():
+            value = getattr(payload, request_field)
             if value is not None and value not in support["categories"][training_field]:
                 warnings.append(f"{training_field} was not observed in training data.")
 
@@ -159,17 +188,8 @@ class Runtime:
         ):
             warnings.append("This Make-Model pairing was not observed in training data.")
 
-        numeric_map = {
-            "year": "Year",
-            "engine_size": "Engine_Size",
-            "mileage": "Mileage",
-            "horsepower": "Horsepower",
-            "torque": "Torque",
-            "owners": "Owners",
-            "fuel_efficiency": "Fuel_Efficiency",
-        }
-        for request_field, training_field in numeric_map.items():
-            value = values[request_field]
+        for request_field, training_field in NUMERIC_SUPPORT_FIELDS.items():
+            value = getattr(payload, request_field)
             if value is None:
                 continue
             bounds = support["numeric"][training_field]
