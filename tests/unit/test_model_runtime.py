@@ -385,3 +385,80 @@ def test_model_recovery_log_resets_failure_counter(monkeypatch, caplog):
         '"event": "model.load_recovered"' in record.message
         for record in caplog.records
     )
+
+
+
+def test_dataset_signature_os_error_becomes_readiness_error(monkeypatch):
+    runtime = Runtime(refresh_ttl_seconds=0)
+    monkeypatch.setattr(
+        model_runtime,
+        "_file_signature",
+        lambda path: (_ for _ in ()).throw(PermissionError("dataset inaccessible")),
+    )
+
+    runtime._load_dataset_gate()
+
+    assert runtime.dataset_error == (
+        "Dataset path could not be accessed: dataset inaccessible"
+    )
+
+
+def test_model_signature_os_error_becomes_readiness_error(monkeypatch):
+    runtime = Runtime(refresh_ttl_seconds=0)
+    monkeypatch.setattr(
+        model_runtime,
+        "_file_signature",
+        lambda path: (_ for _ in ()).throw(PermissionError("model inaccessible")),
+    )
+
+    runtime._load_model()
+
+    assert runtime.bundle is None
+    assert runtime.model_error == (
+        "Model artifact path could not be accessed: model inaccessible"
+    )
+
+
+def test_missing_numeric_support_metadata_is_low_support_not_exception():
+    runtime = Runtime()
+    runtime.bundle = {
+        "support": {
+            "categories": {
+                "Make": ["Toyota"],
+                "Model": ["Camry"],
+                "Fuel_Type": ["Petrol"],
+                "Transmission": ["Auto"],
+                "Service_History": ["Full Service"],
+                "Color": ["White"],
+                "Body_Type": ["Sedan"],
+                "Drivetrain": ["FWD"],
+                "Location": ["TX"],
+            },
+            "make_models": {"Toyota": ["Camry"]},
+            "numeric": {"Year": {"min": 2005, "max": 2024}},
+        }
+    }
+    payload = VehicleInput(
+        make="Toyota",
+        model="Camry",
+        year=2022,
+        fuel_type="Petrol",
+        transmission="Auto",
+        engine_size=2.0,
+        mileage=10000,
+        horsepower=150,
+        torque=150,
+        owners=1,
+        accident_history=0,
+        service_history="Full Service",
+        color="White",
+        body_type="Sedan",
+        drivetrain="FWD",
+        fuel_efficiency=32,
+        location="TX",
+    )
+
+    support, warnings = runtime._support(payload)
+
+    assert support == "low_confidence"
+    assert "Engine_Size support metadata is unavailable." in warnings
