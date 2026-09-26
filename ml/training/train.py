@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +32,12 @@ RANDOM_SEED = 42
 ARTIFACT_PATH = Path("models/auto_price.joblib")
 SPLIT_MANIFEST_PATH = Path("models/split_manifest.json")
 MODEL_CARD_PATH = Path("model_card.md")
+DEFAULT_MLFLOW_TRACKING_URI = "sqlite:///mlflow.db"
+
+def _mlflow_tracking_uri() -> str:
+    configured = os.getenv("MLFLOW_TRACKING_URI", "").strip()
+    return configured or DEFAULT_MLFLOW_TRACKING_URI
+
 
 CATBOOST_PARAMS = {
     "iterations": 350,
@@ -447,7 +454,7 @@ def main() -> int:
             import mlflow
         except ImportError as exc:
             raise SystemExit("MLflow is required for release training. Install project dependencies and retry.") from exc
-        mlflow.set_tracking_uri("file:./mlruns")
+        mlflow.set_tracking_uri(_mlflow_tracking_uri())
         mlflow.set_experiment("vroomvalue")
         with mlflow.start_run(run_name="catboost-champion"):
             mlflow.log_params({**CATBOOST_PARAMS, "objective_variant": objective, "reference_year": REFERENCE_YEAR})
