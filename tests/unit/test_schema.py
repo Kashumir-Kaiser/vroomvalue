@@ -67,3 +67,32 @@ def test_future_feedback_date_is_rejected():
             actual_sale_price=10_000,
             sale_date="2999-01-01",
         )
+
+
+
+@pytest.mark.parametrize("price", [0, -0.01, -100])
+def test_non_positive_feedback_price_is_rejected(price: float):
+    with pytest.raises(ValidationError):
+        FeedbackInput(
+            prediction_id="abc12345",
+            actual_sale_price=price,
+            sale_date="2026-09-25",
+        )
+
+
+def test_feedback_date_before_automobile_era_is_rejected():
+    with pytest.raises(ValidationError, match="1886-01-29"):
+        FeedbackInput(
+            prediction_id="abc12345",
+            actual_sale_price=10_000,
+            sale_date="1800-01-01",
+        )
+
+
+def test_earliest_supported_feedback_date_is_valid():
+    payload = FeedbackInput(
+        prediction_id="abc12345",
+        actual_sale_price=10_000,
+        sale_date="1886-01-29",
+    )
+    assert payload.sale_date.isoformat() == "1886-01-29"

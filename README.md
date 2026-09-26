@@ -253,7 +253,8 @@ Input models reject:
 - Owners outside 1–5;
 - invalid accident-history values;
 - malformed prediction IDs;
-- feedback sale dates in the future.
+- non-positive or implausibly large feedback sale prices;
+- feedback sale dates earlier than 1886-01-29 or later than the current date.
 
 Required text fields are trimmed and blank values return the explicit validation message `Field must not be blank.` Optional blank strings are normalized to unknown values. Location codes are normalized to uppercase.
 

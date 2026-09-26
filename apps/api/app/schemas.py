@@ -79,6 +79,9 @@ class VehicleInput(StrictInputModel):
         return self
 
 
+EARLIEST_AUTOMOBILE_DATE = date(1886, 1, 29)
+
+
 class FeedbackInput(StrictInputModel):
     prediction_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     actual_sale_price: float = Field(gt=0, le=10_000_000)
@@ -86,7 +89,11 @@ class FeedbackInput(StrictInputModel):
 
     @field_validator("sale_date")
     @classmethod
-    def sale_date_not_in_future(cls, value: date) -> date:
+    def sale_date_is_plausible(cls, value: date) -> date:
+        if value < EARLIEST_AUTOMOBILE_DATE:
+            raise ValueError(
+                "Sale date cannot be earlier than 1886-01-29."
+            )
         if value > datetime.now(UTC).date():
             raise ValueError("Sale date cannot be in the future.")
         return value
