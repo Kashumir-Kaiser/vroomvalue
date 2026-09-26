@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -77,6 +78,29 @@ METRICS_EXCLUDED_PATHS = {
 }
 
 
+def _handler_started(request: Request) -> float:
+    now = time.perf_counter()
+    timings = getattr(request.state, "handler_timings", None)
+    if not isinstance(timings, dict):
+        timings = {}
+        request.state.handler_timings = timings
+    request_started = getattr(request.state, "request_started_perf", now)
+    timings["dispatch_wait"] = round((now - request_started) * 1000, 2)
+    return now
+
+
+def _record_phase(request: Request, name: str, started: float) -> None:
+    timings = getattr(request.state, "handler_timings", None)
+    if not isinstance(timings, dict):
+        timings = {}
+        request.state.handler_timings = timings
+    timings[name] = round((time.perf_counter() - started) * 1000, 2)
+
+
+def _record_handler_total(request: Request, started: float) -> None:
+    _record_phase(request, "handler_total", started)
+
+
 def _require_admin_token(provided: str | None) -> None:
     if ADMIN_TOKEN and (provided is None or not hmac.compare_digest(provided, ADMIN_TOKEN)):
         raise HTTPException(status_code=401, detail="Admin authentication required.")
@@ -124,49 +148,84 @@ app.add_middleware(
 
 
 @app.get("/health/live")
-def health_live():
-    return {"status": "ok"}
+def health_live(request: Request):
+    handler_started = _handler_started(request)
+    response = {"status": "ok"}
+    _record_handler_total(request, handler_started)
+    return response
 
 
 @app.get("/health/ready")
-def health_ready():
+def health_ready(request: Request):
+    handler_started = _handler_started(request)
+
+    phase = time.perf_counter()
     runtime.refresh_if_changed()
+    _record_phase(request, "runtime_refresh", phase)
+
     error = runtime.ready_error()
     if error:
+        _record_handler_total(request, handler_started)
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "detail": error},
         )
-    if not database_ready():
+
+    phase = time.perf_counter()
+    db_is_ready = database_ready()
+    _record_phase(request, "database_ready", phase)
+    if not db_is_ready:
+        _record_handler_total(request, handler_started)
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "detail": "Database is unavailable."},
         )
+
     assert runtime.bundle is not None
-    return {"status": "ready", "model_version": runtime.bundle["model_version"]}
+    response = {"status": "ready", "model_version": runtime.bundle["model_version"]}
+    _record_handler_total(request, handler_started)
+    return response
 
 
 @app.get("/v1/metadata")
-def metadata():
+def metadata(request: Request):
+    handler_started = _handler_started(request)
+
+    phase = time.perf_counter()
     runtime.refresh_if_changed()
+    _record_phase(request, "runtime_refresh", phase)
+
     error = runtime.ready_error()
     if error:
+        _record_handler_total(request, handler_started)
         raise HTTPException(status_code=503, detail=error)
-    return runtime.metadata()
+
+    phase = time.perf_counter()
+    response = runtime.metadata()
+    _record_phase(request, "metadata_build", phase)
+    _record_handler_total(request, handler_started)
+    return response
 
 
 @app.post("/v1/predictions", response_model=PredictionResponse)
 def predict(payload: VehicleInput, request: Request):
+    handler_started = _handler_started(request)
+
+    phase = time.perf_counter()
     runtime.refresh_if_changed()
+    _record_phase(request, "runtime_refresh", phase)
     error = runtime.ready_error()
     if error:
         raise HTTPException(status_code=503, detail=error)
 
+    phase = time.perf_counter()
     result = runtime.predict(payload)
+    _record_phase(request, "model_predict", phase)
     prediction_id = os.urandom(16).hex()
     request_id = request.state.request_id
     assert runtime.bundle is not None
 
+    phase = time.perf_counter()
     try:
         save_prediction(
             PredictionRecord(
@@ -192,6 +251,7 @@ def predict(payload: VehicleInput, request: Request):
             status_code=503,
             detail="Prediction storage is unavailable.",
         ) from exc
+    _record_phase(request, "prediction_db_save", phase)
 
     logger.info(
         json.dumps(
@@ -205,7 +265,7 @@ def predict(payload: VehicleInput, request: Request):
             }
         )
     )
-    return {
+    response = {
         "prediction_id": prediction_id,
         "request_id": request_id,
         "estimated_price": {"amount": result["estimate"], "currency": "USD"},
@@ -220,10 +280,14 @@ def predict(payload: VehicleInput, request: Request):
             "as_of_date": runtime.bundle["as_of_date"],
         },
     }
+    _record_handler_total(request, handler_started)
+    return response
 
 
 @app.post("/v1/feedback")
-def feedback(payload: FeedbackInput):
+def feedback(payload: FeedbackInput, request: Request):
+    handler_started = _handler_started(request)
+    phase = time.perf_counter()
     try:
         save_feedback(
             FeedbackRecord(
@@ -241,12 +305,21 @@ def feedback(payload: FeedbackInput):
             status_code=503,
             detail="Feedback storage is unavailable.",
         ) from exc
-    return {"status": "accepted"}
+    _record_phase(request, "feedback_db_save", phase)
+    response = {"status": "accepted"}
+    _record_handler_total(request, handler_started)
+    return response
 
 
 @app.get("/v1/admin/metrics", response_model=AdminMetricsResponse)
-def metrics(x_admin_token: str | None = Header(default=None)) -> AdminMetricsResponse:
+def metrics(
+    request: Request,
+    x_admin_token: str | None = Header(default=None),
+) -> AdminMetricsResponse:
+    handler_started = _handler_started(request)
     _require_admin_token(x_admin_token)
+
+    phase = time.perf_counter()
     try:
         data = admin_metrics()
     except SQLAlchemyError as exc:
@@ -255,21 +328,30 @@ def metrics(x_admin_token: str | None = Header(default=None)) -> AdminMetricsRes
             detail="Metrics storage is unavailable.",
         ) from exc
 
-    return AdminMetricsResponse(
+    _record_phase(request, "admin_metrics_db", phase)
+    phase = time.perf_counter()
+    response = AdminMetricsResponse(
         **data,
         current_model_version=(
             runtime.bundle["model_version"] if runtime.bundle else None
         ),
         readiness="ready" if not runtime.ready_error() else "not_ready",
     )
+    _record_phase(request, "admin_metrics_response", phase)
+    _record_handler_total(request, handler_started)
+    return response
 
 
 
 @app.get("/v1/admin/feedback", response_model=list[AdminFeedbackItem])
 def admin_feedback(
+    request: Request,
     x_admin_token: str | None = Header(default=None),
 ) -> list[AdminFeedbackItem]:
+    handler_started = _handler_started(request)
     _require_admin_token(x_admin_token)
+
+    phase = time.perf_counter()
     try:
         rows = list_feedback_for_admin()
     except SQLAlchemyError as exc:
@@ -277,18 +359,28 @@ def admin_feedback(
             status_code=503,
             detail="Feedback review queue is unavailable.",
         ) from exc
-    return [AdminFeedbackItem(**row) for row in rows]
+    _record_phase(request, "admin_feedback_db", phase)
+
+    phase = time.perf_counter()
+    response = [AdminFeedbackItem(**row) for row in rows]
+    _record_phase(request, "admin_feedback_validate", phase)
+    _record_handler_total(request, handler_started)
+    return response
 
 
 @app.post("/v1/admin/feedback/{feedback_id}/review")
 def review_feedback(
     feedback_id: int,
     payload: FeedbackReviewInput,
+    request: Request,
     x_admin_token: str | None = Header(default=None),
 ):
+    handler_started = _handler_started(request)
     _require_admin_token(x_admin_token)
+
+    phase = time.perf_counter()
     try:
-        return set_feedback_review_status(feedback_id, payload.status)
+        response = set_feedback_review_status(feedback_id, payload.status)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
@@ -296,3 +388,6 @@ def review_feedback(
             status_code=503,
             detail="Feedback review update is unavailable.",
         ) from exc
+    _record_phase(request, "feedback_review_db", phase)
+    _record_handler_total(request, handler_started)
+    return response
