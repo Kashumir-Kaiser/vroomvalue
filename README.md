@@ -467,6 +467,27 @@ docker compose up --watch
 
 Keep that process running while editing. Uvicorn watches the bind-mounted API/ML source and Next.js watches the bind-mounted frontend source directly; Compose itself only watches dependency and Dockerfile inputs for rebuilds.
 
+### Lighthouse and production-performance checks
+
+Do not use the Next.js development server as a Lighthouse performance target. Development mode performs on-demand Turbopack compilation, includes development-only JavaScript and source-map/HMR machinery, and can report misleading document latency, unused-JavaScript, minification, main-thread-work, and CSP/eval diagnostics.
+
+A production-like Lighthouse run can reuse the already-built development container and its installed dependencies, so no Docker image rebuild is required:
+
+```powershell
+docker compose stop web
+docker compose run --rm --service-ports web sh scripts/serve-lighthouse.sh
+```
+
+The script runs a fresh `next build`, prepares the standalone static assets, and starts the optimized standalone server at `http://localhost:3000`. Run Lighthouse against that server. When the audit is finished, stop the one-off server with `Ctrl+C` and return to hot-reload development with:
+
+```powershell
+docker compose up web --watch
+```
+
+The development server may legitimately log `Compiling /` and take many seconds for a cold route compile on Docker Desktop for Windows; that compile time is a development-tooling cost and is not representative of production page-load performance. Production bundles should also remove the development eval/HMR path. If Chrome still reports a CSP `eval` violation while using the standalone production server, inspect the actual response headers because VroomValue does not configure a Content-Security-Policy header in Next.js.
+
+The frontend serves `/robots.txt` and a structured `/llms.txt` route so Lighthouse crawler and Agentic Browsing checks do not depend on development-server fallback behavior.
+
 To run the stack in the background instead:
 
 ```powershell
