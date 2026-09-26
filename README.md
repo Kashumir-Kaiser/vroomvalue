@@ -415,6 +415,39 @@ The local services are:
 - API: `http://localhost:8000`
 - OpenAPI docs: `http://localhost:8000/docs`
 
+When `docker compose up --build` is running in the foreground, leave that terminal open and use a second terminal for verification. Check the containers:
+
+```powershell
+docker compose ps
+```
+
+Then verify API liveness and readiness:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/health/live
+Invoke-RestMethod http://localhost:8000/health/ready
+```
+
+The expected statuses are `ok` for liveness and `ready` for readiness. Finally, open `http://localhost:3000` in a browser for the web application.
+
+After the first successful image build, ordinary restarts do not require rebuilding unless dependencies or Docker build inputs changed:
+
+```powershell
+docker compose up
+```
+
+To run the stack in the background instead:
+
+```powershell
+docker compose up -d
+```
+
+Stop background containers with:
+
+```powershell
+docker compose down
+```
+
 ## Environment variables
 
 | Variable | Default | Purpose |
