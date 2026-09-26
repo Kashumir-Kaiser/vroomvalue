@@ -311,31 +311,61 @@ The result panel displays the price estimate, calibrated range, support status, 
 
 ### Requirements
 
-- Python 3.11–3.13; Python 3.12 is used in CI;
+- `uv` for the Python toolchain and virtual environment;
+- Python **3.12**, installed and managed locally by `uv` for this project; a global Python 3.12 installation is not required;
 - Node.js 22;
 - Docker and Docker Compose for the full stack.
 
 ### Python environment
 
-```bash
-python -m venv .venv
+VroomValue standardizes local development on **Python 3.12**, matching CI. Do not create the project environment from whatever `python` happens to be on the global PATH, because that may select an unsupported interpreter such as Python 3.14.
+
+Install `uv` once if it is not already available:
+
+```powershell
+# Windows PowerShell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Activate it:
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+From the repository root, install the project-local Python 3.12 toolchain and create the virtual environment explicitly from it:
 
 ```bash
-# Windows
-.venv\Scripts\activate
+uv python install 3.12
+uv venv --python 3.12 .venv
+```
 
+Activate the environment:
+
+```powershell
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+```bash
 # macOS / Linux
 source .venv/bin/activate
 ```
 
-Install the project and development dependencies:
+Verify that the project environment is using Python 3.12:
 
 ```bash
-pip install -e '.[dev]'
+python --version
 ```
+
+The output must begin with `Python 3.12`.
+
+Install the project and development dependencies into that environment:
+
+```bash
+uv pip install -e ".[dev]"
+```
+
+This setup does not require Python 3.12 to be installed globally or added to the system PATH; `uv` downloads and manages the interpreter used by `.venv`.
 
 ### Train the model
 
