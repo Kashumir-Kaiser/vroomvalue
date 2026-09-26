@@ -16,9 +16,11 @@ from apps.api.app.database import (
     PredictionRecord,
     admin_metrics,
     init_db,
+    list_feedback_for_admin,
     record_request_metric,
     save_feedback,
     save_prediction,
+    set_feedback_review_status,
 )
 from apps.api.app.middleware import (
     BodySizeLimitMiddleware,
@@ -26,8 +28,10 @@ from apps.api.app.middleware import (
 )
 from apps.api.app.model_runtime import runtime
 from apps.api.app.schemas import (
+    AdminFeedbackItem,
     AdminMetricsResponse,
     FeedbackInput,
+    FeedbackReviewInput,
     PredictionResponse,
     VehicleInput,
 )
@@ -42,6 +46,7 @@ METRICS_EXCLUDED_PATHS = {
     "/health/live",
     "/health/ready",
     "/v1/admin/metrics",
+    "/v1/admin/feedback",
 }
 
 
@@ -222,3 +227,37 @@ def metrics(x_admin_token: str | None = Header(default=None)) -> AdminMetricsRes
         ),
         readiness="ready" if not runtime.ready_error() else "not_ready",
     )
+
+
+
+@app.get("/v1/admin/feedback", response_model=list[AdminFeedbackItem])
+def admin_feedback(
+    x_admin_token: str | None = Header(default=None),
+) -> list[AdminFeedbackItem]:
+    _require_admin_token(x_admin_token)
+    try:
+        rows = list_feedback_for_admin()
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Feedback review queue is unavailable.",
+        ) from exc
+    return [AdminFeedbackItem(**row) for row in rows]
+
+
+@app.post("/v1/admin/feedback/{feedback_id}/review")
+def review_feedback(
+    feedback_id: int,
+    payload: FeedbackReviewInput,
+    x_admin_token: str | None = Header(default=None),
+):
+    _require_admin_token(x_admin_token)
+    try:
+        return set_feedback_review_status(feedback_id, payload.status)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Feedback review update is unavailable.",
+        ) from exc
