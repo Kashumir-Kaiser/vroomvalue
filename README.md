@@ -42,10 +42,10 @@ vroomvalue/
 │   │       ├── model_runtime.py  # Model loading, integrity checks, inference
 │   │       └── schemas.py        # Pydantic request/response validation
 │   └── web/
-│       ├── app/                  # Next.js pages and global styles
-│       ├── components/           # Prediction form and result UI
-│       ├── admin/                # Runtime metrics page
-│       └── feedback/             # Actual-sale feedback page
+│       ├── app/                  # Next.js App Router pages and global styles
+│       │   ├── admin/            # Runtime metrics route (/admin)
+│       │   └── feedback/         # Actual-sale feedback route (/feedback)
+│       └── components/           # Prediction form and result UI
 ├── data/
 │   └── automobile_dataset.csv   # Supplied project dataset
 ├── infra/
