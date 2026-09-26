@@ -115,7 +115,7 @@ def _persist_request_metric(_path: str, status_code: int, latency_ms: float) -> 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await run_in_threadpool(runtime.load, True)
+    await run_in_threadpool(runtime.load, force=True)
     try:
         await run_in_threadpool(init_db)
     except SQLAlchemyError:
