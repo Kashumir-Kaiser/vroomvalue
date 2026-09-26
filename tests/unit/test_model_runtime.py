@@ -319,11 +319,10 @@ def test_persistent_model_failure_logs_are_rate_limited(monkeypatch, caplog):
     times = iter([10.0, 20.0, 71.0])
 
     monkeypatch.setattr(model_runtime, "_file_signature", lambda path: fixed_signature)
-    monkeypatch.setattr(
-        model_runtime,
-        "verify_checksum",
-        lambda path: (_ for _ in ()).throw(ValueError("corrupt artifact")),
-    )
+    def fail_checksum(path):
+        raise ValueError("corrupt artifact")
+
+    monkeypatch.setattr(model_runtime, "verify_checksum", fail_checksum)
     monkeypatch.setattr(
         model_runtime.time,
         "monotonic",
