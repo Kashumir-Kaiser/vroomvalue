@@ -74,6 +74,8 @@ def test_happy_path_and_feedback():
 
         assert after["prediction_count"] >= 1
         assert after["feedback_count"] >= 1
+        # TestClient waits for the complete ASGI invocation, including the
+        # thread-pool metric write, before returning each response.
         assert after["request_count"] == before["request_count"] + 2
 
 
