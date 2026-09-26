@@ -169,3 +169,21 @@ def test_health_live_exposes_handler_server_timing():
     server_timing = response.headers["server-timing"]
     assert "dispatch-wait;dur=" in server_timing
     assert "handler-total;dur=" in server_timing
+
+
+
+def test_metadata_exposes_full_vehicle_choices():
+    with TestClient(app) as client:
+        response = client.get("/v1/metadata")
+
+    assert response.status_code == 200
+    metadata = response.json()
+    makes = metadata["categories"]["Make"]
+    assert len(makes) > 1
+    assert "Toyota" in makes
+    assert set(metadata["make_models"]["Toyota"]) >= {
+        "Camry",
+        "Corolla",
+        "Highlander",
+        "RAV4",
+    }
