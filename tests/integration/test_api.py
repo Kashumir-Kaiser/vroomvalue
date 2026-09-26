@@ -158,3 +158,14 @@ def test_readiness_includes_database_health(monkeypatch):
         "status": "not_ready",
         "detail": "Database is unavailable.",
     }
+
+
+
+def test_health_live_exposes_handler_server_timing():
+    with TestClient(app) as client:
+        response = client.get("/health/live")
+
+    assert response.status_code == 200
+    server_timing = response.headers["server-timing"]
+    assert "dispatch-wait;dur=" in server_timing
+    assert "handler-total;dur=" in server_timing
