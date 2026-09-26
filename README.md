@@ -445,6 +445,20 @@ Invoke-RestMethod http://localhost:8000/health/ready
 
 The expected statuses are `ok` for liveness and `ready` for readiness. Finally, open `http://localhost:3000` in a browser for the web application.
 
+### API latency diagnostics
+
+API responses expose a `Server-Timing` header and the structured `request.completed` log includes a `timings_ms` object. These diagnostics separate time spent waiting to enter a synchronous FastAPI handler from work performed inside the handler.
+
+For a low-cost baseline, request liveness directly:
+
+```powershell
+curl.exe -s -D - http://localhost:8000/health/live -o NUL
+```
+
+Typical timing names include `dispatch-wait`, `handler-total`, `runtime-refresh`, `database-ready`, `model-predict`, `prediction-db-save`, `feedback-db-save`, `admin-metrics-db`, and `admin-feedback-db`. A large `dispatch-wait` points to worker-thread contention. A large database phase points to connection/query latency. A large `runtime-refresh` points to model/dataset filesystem checks. A large `model-predict` isolates inference/SHAP work. If the middleware's total `latency_ms` is high while all handler timings are low, investigate response sending, event-loop/container scheduling, or Docker networking instead.
+
+The development API disables Uvicorn's duplicate access log because `request.completed` already records route, status, request ID, total latency, and handler timings.
+
 After the first successful image build, restart development with watch enabled and without rebuilding:
 
 ```powershell
