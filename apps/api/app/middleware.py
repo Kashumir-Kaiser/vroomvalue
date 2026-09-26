@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -122,6 +123,7 @@ class RequestObservabilityMiddleware:
         self.metric_recorder = metric_recorder
         self.excluded_paths = frozenset(excluded_paths)
         self.request_id_pattern = re.compile(request_id_pattern)
+        self._metric_tasks: set[asyncio.Task[None]] = set()
 
     def _request_id(self, scope: dict[str, Any]) -> str:
         for key, value in scope.get("headers", []):
@@ -172,14 +174,18 @@ class RequestObservabilityMiddleware:
             )
         )
 
+    def _metric_is_excluded(self, path: str) -> bool:
+        return any(
+            path == excluded or path.startswith(f"{excluded}/")
+            for excluded in self.excluded_paths
+        )
+
     async def _record_metric(
         self,
         path: str,
         status_code: int,
         latency_ms: float,
     ) -> None:
-        if path in self.excluded_paths:
-            return
         try:
             await run_in_threadpool(
                 self.metric_recorder,
@@ -197,6 +203,20 @@ class RequestObservabilityMiddleware:
                     }
                 )
             )
+
+    def _schedule_metric(
+        self,
+        path: str,
+        status_code: int,
+        latency_ms: float,
+    ) -> None:
+        if self._metric_is_excluded(path):
+            return
+        task = asyncio.create_task(
+            self._record_metric(path, status_code, latency_ms)
+        )
+        self._metric_tasks.add(task)
+        task.add_done_callback(self._metric_tasks.discard)
 
     async def __call__(
         self,
@@ -249,7 +269,7 @@ class RequestObservabilityMiddleware:
                 )
             )
             if response_started:
-                await self._record_metric(path, status_code, latency_ms)
+                self._schedule_metric(path, status_code, latency_ms)
                 self._log_completed(
                     request_id,
                     path,
@@ -284,7 +304,7 @@ class RequestObservabilityMiddleware:
 
         latency_ms = (time.perf_counter() - started) * 1000
         if response_complete:
-            await self._record_metric(path, status_code, latency_ms)
+            self._schedule_metric(path, status_code, latency_ms)
 
         self._log_completed(
             request_id,
