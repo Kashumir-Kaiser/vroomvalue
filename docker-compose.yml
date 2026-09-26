@@ -33,9 +33,9 @@ services:
       - --no-access-log
     environment:
       DATABASE_URL: postgresql+psycopg://vroomvalue:vroomvalue@db:5432/vroomvalue
+      DATABASE_POOL_PRE_PING: "false"
       DATASET_PATH: data/automobile_dataset.csv
       MODEL_ARTIFACT_PATH: models/auto_price.joblib
-      WATCHFILES_FORCE_POLLING: "true"
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ./apps/api:/app/apps/api
