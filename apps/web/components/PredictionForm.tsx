@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type Metadata = {
+export type Metadata = {
   categories: Record<string, string[]>;
   make_models: Record<string, string[]>;
   field_rules: { engine_size: { min: number; max: number; step: number } };
@@ -53,16 +53,24 @@ function apiErrorMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
-export default function PredictionForm() {
-  const [meta, setMeta] = useState<Metadata | null>(null);
+export default function PredictionForm({
+  initialMetadata,
+}: {
+  initialMetadata: Metadata | null;
+}) {
+  const [meta, setMeta] = useState<Metadata | null>(initialMetadata);
   const [result, setResult] = useState<Prediction | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [make, setMake] = useState("Toyota");
-  const [model, setModel] = useState("Camry");
+  const firstMake = initialMetadata?.categories?.Make?.[0] ?? "";
+  const firstModel =
+    (firstMake && initialMetadata?.make_models?.[firstMake]?.[0]) ?? "";
+  const [make, setMake] = useState(firstMake);
+  const [model, setModel] = useState(firstModel);
   const models = useMemo(() => meta?.make_models?.[make] ?? [], [meta, make]);
 
   useEffect(() => {
+    if (meta) return;
     let cancelled = false;
 
     async function loadMetadata() {
@@ -72,7 +80,15 @@ export default function PredictionForm() {
         if (!response.ok) {
           throw new Error(apiErrorMessage(body, "Service is not ready."));
         }
-        if (!cancelled) setMeta(body as Metadata);
+        if (!cancelled) {
+          const loaded = body as Metadata;
+          setMeta(loaded);
+          const loadedMake = loaded.categories?.Make?.[0] ?? "";
+          setMake(loadedMake);
+          setModel(
+            (loadedMake && loaded.make_models?.[loadedMake]?.[0]) ?? "",
+          );
+        }
       } catch (caught) {
         if (!cancelled) {
           setError(caught instanceof Error ? caught.message : "Service is not ready.");
@@ -82,7 +98,7 @@ export default function PredictionForm() {
 
     void loadMetadata();
     return () => { cancelled = true; };
-  }, []);
+  }, [meta]);
 
   useEffect(() => {
     if (!models.length) return;
@@ -191,8 +207,10 @@ export default function PredictionForm() {
           <div className="grid">
             <label>
               Make
-              <select name="make" value={make} onChange={(e) => setMake(e.target.value)} required>
-                {selectOptions(meta?.categories?.Make ?? ["Toyota"])}
+              <select name="make" value={make} onChange={(e) => setMake(e.target.value)} disabled={!meta} required>
+                {meta
+                  ? selectOptions(meta.categories?.Make ?? [])
+                  : <option value="">Loading makes…</option>}
               </select>
             </label>
             <label>
@@ -201,26 +219,29 @@ export default function PredictionForm() {
                 name="model"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
+                disabled={!meta}
                 required
               >
-                {selectOptions(models.length ? models : ["Camry"])}
+                {meta
+                  ? selectOptions(models)
+                  : <option value="">Loading models…</option>}
               </select>
             </label>
             <label>Year<input name="year" type="number" min="2005" max="2024" defaultValue="2022" required /></label>
-            <label>Fuel type<select name="fuel_type">{selectOptions(meta?.categories?.Fuel_Type ?? ["Petrol", "Diesel", "Electric", "Hybrid"])}</select></label>
-            <label>Transmission<select name="transmission">{selectOptions(meta?.categories?.Transmission ?? ["Automatic", "Manual"], true)}</select></label>
+            <label>Fuel type<select name="fuel_type" disabled={!meta}>{meta ? selectOptions(meta.categories?.Fuel_Type ?? []) : <option value="">Loading…</option>}</select></label>
+            <label>Transmission<select name="transmission" disabled={!meta}>{meta ? selectOptions(meta.categories?.Transmission ?? [], true) : <option value="">Loading…</option>}</select></label>
             <label>Engine size (L)<input name="engine_size" type="number" min="0" max="5.7" step="0.1" placeholder="Unknown" defaultValue="2.5" /></label>
             <label>Mileage (mi)<input name="mileage" type="number" min="0" defaultValue="42000" required /></label>
             <label>Horsepower<input name="horsepower" type="number" step="0.1" placeholder="Unknown" defaultValue="203" /></label>
             <label>Torque (lb-ft)<input name="torque" type="number" step="0.1" placeholder="Unknown" defaultValue="184" /></label>
             <label>Owners<input name="owners" type="number" min="1" defaultValue="1" required /></label>
             <label>Accident history<select name="accident_history"><option value="">Unknown</option><option value="0">No recorded accident</option><option value="1">Recorded accident</option></select></label>
-            <label>Service history<select name="service_history">{selectOptions(meta?.categories?.Service_History ?? ["No Service", "Partial Service", "Full Service"], true)}</select></label>
-            <label>Color<select name="color">{selectOptions(meta?.categories?.Color ?? ["White", "Black", "Silver"], true)}</select></label>
-            <label>Body type<select name="body_type">{selectOptions(meta?.categories?.Body_Type ?? ["Sedan", "SUV", "Hatchback", "Coupe", "Truck"])}</select></label>
-            <label>Drivetrain<select name="drivetrain">{selectOptions(meta?.categories?.Drivetrain ?? ["FWD", "RWD", "AWD", "4WD"])}</select></label>
+            <label>Service history<select name="service_history" disabled={!meta}>{meta ? selectOptions(meta.categories?.Service_History ?? [], true) : <option value="">Loading…</option>}</select></label>
+            <label>Color<select name="color" disabled={!meta}>{meta ? selectOptions(meta.categories?.Color ?? [], true) : <option value="">Loading…</option>}</select></label>
+            <label>Body type<select name="body_type" disabled={!meta}>{meta ? selectOptions(meta.categories?.Body_Type ?? []) : <option value="">Loading…</option>}</select></label>
+            <label>Drivetrain<select name="drivetrain" disabled={!meta}>{meta ? selectOptions(meta.categories?.Drivetrain ?? []) : <option value="">Loading…</option>}</select></label>
             <label>Fuel efficiency (MPG/MPGe)<input name="fuel_efficiency" type="number" step="0.1" placeholder="Unknown" defaultValue="32" /></label>
-            <label>Location<select name="location">{selectOptions(meta?.categories?.Location ?? ["TX", "CA", "NY"], true)}</select></label>
+            <label>Location<select name="location" disabled={!meta}>{meta ? selectOptions(meta.categories?.Location ?? [], true) : <option value="">Loading…</option>}</select></label>
           </div>
 
           <button disabled={loading || !meta}>
