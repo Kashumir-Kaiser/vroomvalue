@@ -134,3 +134,23 @@ class AdminMetricsResponse(BaseModel):
     avg_latency_ms: float
     current_model_version: str | None
     readiness: Literal["ready", "not_ready"]
+
+
+
+class FeedbackReviewInput(StrictInputModel):
+    status: Literal["accepted", "closed"]
+
+
+class AdminFeedbackItem(BaseModel):
+    id: int
+    prediction_id: str
+    actual_sale_price: float
+    sale_date: date
+    submitted_at: datetime
+    predicted_price: float
+    interval_lower: float
+    interval_upper: float
+    support: str
+    model_version: str
+    review_status: Literal["pending", "accepted", "closed"]
+    reviewed_at: datetime | None
