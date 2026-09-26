@@ -420,7 +420,9 @@ After training has produced the model artifact and checksum, start the developme
 docker compose up --build --watch
 ```
 
-The API development image runs Uvicorn with `--reload`, while the web development image runs `next dev`. Compose Watch syncs edits under `apps/api`, `ml`, and `apps/web` into the running containers, so normal Python/TypeScript/CSS changes no longer require image rebuilds. Dependency-file changes such as `pyproject.toml` or the web `package*.json` files intentionally trigger a rebuild.
+The API development image runs Uvicorn with `--reload`; Python source is bind-mounted and `WATCHFILES_FORCE_POLLING=true` makes reload detection reliable under Docker Desktop on Windows. The web development image runs Next.js with Turbopack and a bind-mounted `apps/web` tree. Container-owned `node_modules` and `.next` volumes keep generated files out of the host bind mount and prevent hot-reload synchronization loops.
+
+Normal Python, TypeScript, React, and CSS edits reload in place and do not rebuild images. Compose Watch is retained only for dependency/Dockerfile changes such as `pyproject.toml`, `package*.json`, and the Dockerfiles; those changes intentionally rebuild the affected service. Turbopack is used for development so the browser does not depend on webpack's eval-based development bundles.
 
 The local services are:
 
@@ -449,7 +451,7 @@ After the first successful image build, restart development with watch enabled a
 docker compose up --watch
 ```
 
-Keep that process running while editing. Uvicorn and Next.js reload after Compose synchronizes changed source files.
+Keep that process running while editing. Uvicorn watches the bind-mounted API/ML source and Next.js watches the bind-mounted frontend source directly; Compose itself only watches dependency and Dockerfile inputs for rebuilds.
 
 To run the stack in the background instead:
 
