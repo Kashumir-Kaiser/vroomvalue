@@ -38,27 +38,52 @@ type FeedbackItem = {
 function errorMessage(body: unknown): string {
   if (!body || typeof body !== "object") return "Admin data unavailable";
   const detail = (body as { detail?: unknown }).detail;
-  return typeof detail === "string" ? detail : "Admin data unavailable";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (!item || typeof item !== "object") return "";
+        const message = (item as { msg?: unknown }).msg;
+        return typeof message === "string" ? message : "";
+      })
+      .filter(Boolean);
+    if (messages.length) return messages.join(" ");
+  }
+  return "Admin data unavailable";
+}
+
+function adminHeaders(token: string, json = false): HeadersInit {
+  const headers: Record<string, string> = {};
+  if (token) headers["X-Admin-Token"] = token;
+  if (json) headers["Content-Type"] = "application/json";
+  return headers;
 }
 
 export default function AdminPage() {
   const [data, setData] = useState<Metrics | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
+  const [adminToken, setAdminToken] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [reviewing, setReviewing] = useState<number | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
-  async function load() {
+  async function load(token = adminToken) {
     setLoading(true);
     setError("");
 
     try {
-      const stamp = Date.now();
+      const headers = adminHeaders(token);
       const [metricsResponse, feedbackResponse] = await Promise.all([
-        fetch(`${API}/v1/admin/metrics?refresh=${stamp}`, { cache: "no-store" }),
-        fetch(`${API}/v1/admin/feedback?refresh=${stamp}`, { cache: "no-store" }),
+        fetch(`${API}/v1/admin/metrics`, {
+          cache: "no-store",
+          headers,
+        }),
+        fetch(`${API}/v1/admin/feedback`, {
+          cache: "no-store",
+          headers,
+        }),
       ]);
       const [metricsBody, feedbackBody]: [unknown, unknown] = await Promise.all([
         metricsResponse.json().catch(() => null),
@@ -88,7 +113,7 @@ export default function AdminPage() {
         `${API}/v1/admin/feedback/${feedbackId}/review`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: adminHeaders(adminToken, true),
           body: JSON.stringify({ status }),
         },
       );
@@ -100,7 +125,7 @@ export default function AdminPage() {
           ? `Feedback #${feedbackId} accepted.`
           : `Feedback #${feedbackId} closed.`,
       );
-      await load();
+      await load(adminToken);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Review update failed");
     } finally {
@@ -109,8 +134,28 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    void load();
+    let storedToken = "";
+    try {
+      storedToken = sessionStorage.getItem("vroomvalue:adminToken") ?? "";
+    } catch {
+      storedToken = "";
+    }
+    setAdminToken(storedToken);
+    void load(storedToken);
   }, []);
+
+  function updateToken(value: string) {
+    setAdminToken(value);
+    try {
+      if (value) {
+        sessionStorage.setItem("vroomvalue:adminToken", value);
+      } else {
+        sessionStorage.removeItem("vroomvalue:adminToken");
+      }
+    } catch {
+      // The token can still be used for this page load if storage is unavailable.
+    }
+  }
 
   return (
     <main className="shell narrow admin-page">
@@ -123,6 +168,22 @@ export default function AdminPage() {
           stored for audit but is not treated as approved.
         </p>
       </header>
+
+      <section className="admin-auth">
+        <label>
+          Admin token
+          <input
+            type="password"
+            autoComplete="off"
+            value={adminToken}
+            onChange={(event) => updateToken(event.target.value)}
+            placeholder="Only required when ADMIN_TOKEN is configured"
+          />
+        </label>
+        <button type="button" onClick={() => void load()} disabled={loading}>
+          Apply and refresh
+        </button>
+      </section>
 
       <section className="admin-sheet">
         <div className="sheet-title">
