@@ -367,18 +367,30 @@ uv pip install -e ".[dev]"
 
 This setup does not require Python 3.12 to be installed globally or added to the system PATH; `uv` downloads and manages the interpreter used by `.venv`.
 
+**Keep `.venv` activated for all Python project commands below.** Model training, API commands, Python tests, Ruff, and any other Python command for this repository must run from this Python 3.12 virtual environment, not from the global Python installation. After activation, your shell prompt will normally begin with `(.venv)`.
+
 ### Train the model
 
+Train the model **inside the activated `.venv` environment**:
+
 ```bash
+# The shell should already show (.venv)
+python --version
 python -m ml.training.train
 ```
 
-Release training logs the run to the local MLflow file store under `mlruns/`.
+The version check must report Python 3.12.x before training starts. The training command uses the dependencies installed into `.venv` and writes the model artifacts under `models/`. Release training logs the run to the local MLflow file store under `mlruns/`.
 
-For test/CI runs where MLflow logging is intentionally skipped:
+For test/CI-style training where MLflow logging is intentionally skipped, still run the command from the same activated `.venv`:
 
 ```bash
 python -m ml.training.train --skip-mlflow
+```
+
+Do not deactivate `.venv` before running the Python tests or starting the Python API locally. When you are completely finished working on the project, you can leave the environment with:
+
+```bash
+deactivate
 ```
 
 ### Run the application
