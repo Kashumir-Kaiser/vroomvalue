@@ -250,7 +250,10 @@ export default function PredictionForm() {
                   ? "IN TRAINING SUPPORT"
                   : "LOW SUPPORT"}
               </span>
-              <div className="price">{money.format(result.estimated_price.amount)}</div>
+              <div className="price copyable">{money.format(result.estimated_price.amount)}</div>
+              <p className="prediction-id">
+                Prediction ID: <code className="copyable">{result.prediction_id}</code>
+              </p>
               <div className="range-label">
                 <span>{money.format(result.interval_80.lower)}</span>
                 <b>80% RANGE</b>
