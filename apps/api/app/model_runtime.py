@@ -55,7 +55,7 @@ def _read_refresh_ttl_seconds() -> float:
     return max(0.0, value)
 
 
-REFRESH_TTL_SECONDS = _read_refresh_ttl_seconds()
+MODEL_LOAD_FAILURE_LOG_INTERVAL_SECONDS = 60.0
 
 CATEGORICAL_SUPPORT_FIELDS = {
     "make": "Make",
@@ -100,16 +100,22 @@ class Runtime:
             _UNSET_SIGNATURE
         )
         self._refresh_ttl_seconds = (
-            REFRESH_TTL_SECONDS
+            _read_refresh_ttl_seconds()
             if refresh_ttl_seconds is None
             else max(0.0, float(refresh_ttl_seconds))
         )
         self._last_refresh_check: float | None = None
+        self._model_load_failure_count = 0
+        self._last_model_failure_log_at: float | None = None
         self._lock = threading.RLock()
 
     def _load_dataset_gate(self, *, force: bool = False) -> None:
         signature = _file_signature(DATA_PATH)
-        if not force and signature == self._dataset_signature:
+        if (
+            not force
+            and self._dataset_signature is not _UNSET_SIGNATURE
+            and signature == self._dataset_signature
+        ):
             return
         try:
             validate_dataset_contract(DATA_PATH)
@@ -118,9 +124,51 @@ class Runtime:
             self.dataset_error = str(exc)
         self._dataset_signature = signature
 
+    def _record_model_load_failure(
+        self,
+        exc: Exception,
+        signature: tuple[int, int, int],
+    ) -> None:
+        self._model_load_failure_count += 1
+        now = time.monotonic()
+        if (
+            self._last_model_failure_log_at is not None
+            and now - self._last_model_failure_log_at
+            < MODEL_LOAD_FAILURE_LOG_INTERVAL_SECONDS
+        ):
+            return
+
+        self._last_model_failure_log_at = now
+        logger.error(
+            {
+                "event": "model.load_failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "artifact_signature": signature,
+                "consecutive_failures": self._model_load_failure_count,
+                "retry_after_seconds": self._refresh_ttl_seconds,
+            }
+        )
+
+    def _record_model_load_recovery(self) -> None:
+        if self._model_load_failure_count == 0:
+            return
+        logger.info(
+            {
+                "event": "model.load_recovered",
+                "prior_consecutive_failures": self._model_load_failure_count,
+            }
+        )
+        self._model_load_failure_count = 0
+        self._last_model_failure_log_at = None
+
     def _load_model(self, *, force: bool = False) -> None:
         signature = _file_signature(MODEL_PATH)
-        if not force and signature == self._model_signature:
+        if (
+            not force
+            and self._model_signature is not _UNSET_SIGNATURE
+            and signature == self._model_signature
+        ):
             return
 
         if signature is None:
@@ -155,6 +203,7 @@ class Runtime:
 
             self.bundle = bundle
             self.model_error = None
+            self._record_model_load_recovery()
             try:
                 self._explainer = shap.TreeExplainer(bundle["model"])
             except Exception:
@@ -164,6 +213,7 @@ class Runtime:
             self.bundle = None
             self._explainer = None
             self.model_error = f"Model artifact could not be loaded: {exc}"
+            self._record_model_load_failure(exc, signature)
             # Do not cache a failed non-missing artifact signature. A transient
             # partial write/read failure is retried after the refresh TTL even
             # when filesystem metadata happens to remain unchanged.
