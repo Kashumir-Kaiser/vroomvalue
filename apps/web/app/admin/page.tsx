@@ -3,6 +3,11 @@
 import { useEffect, useState } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const money = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+});
 
 type Metrics = {
   prediction_count: number;
@@ -15,16 +20,34 @@ type Metrics = {
   readiness: string;
 };
 
+type FeedbackItem = {
+  id: number;
+  prediction_id: string;
+  actual_sale_price: number;
+  sale_date: string;
+  submitted_at: string;
+  predicted_price: number;
+  interval_lower: number;
+  interval_upper: number;
+  support: string;
+  model_version: string;
+  review_status: "pending" | "accepted" | "closed";
+  reviewed_at: string | null;
+};
+
 function errorMessage(body: unknown): string {
-  if (!body || typeof body !== "object") return "Metrics unavailable";
+  if (!body || typeof body !== "object") return "Admin data unavailable";
   const detail = (body as { detail?: unknown }).detail;
-  return typeof detail === "string" ? detail : "Metrics unavailable";
+  return typeof detail === "string" ? detail : "Admin data unavailable";
 }
 
 export default function AdminPage() {
   const [data, setData] = useState<Metrics | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [reviewing, setReviewing] = useState<number | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
   async function load() {
@@ -32,19 +55,56 @@ export default function AdminPage() {
     setError("");
 
     try {
-      const response = await fetch(
-        `${API}/v1/admin/metrics?refresh=${Date.now()}`,
-        { cache: "no-store" },
-      );
-      const body: unknown = await response.json().catch(() => null);
+      const stamp = Date.now();
+      const [metricsResponse, feedbackResponse] = await Promise.all([
+        fetch(`${API}/v1/admin/metrics?refresh=${stamp}`, { cache: "no-store" }),
+        fetch(`${API}/v1/admin/feedback?refresh=${stamp}`, { cache: "no-store" }),
+      ]);
+      const [metricsBody, feedbackBody]: [unknown, unknown] = await Promise.all([
+        metricsResponse.json().catch(() => null),
+        feedbackResponse.json().catch(() => null),
+      ]);
 
-      if (!response.ok) throw new Error(errorMessage(body));
-      setData(body as Metrics);
+      if (!metricsResponse.ok) throw new Error(errorMessage(metricsBody));
+      if (!feedbackResponse.ok) throw new Error(errorMessage(feedbackBody));
+
+      setData(metricsBody as Metrics);
+      setFeedback(feedbackBody as FeedbackItem[]);
       setLastRefreshed(new Date());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Metrics unavailable");
+      setError(caught instanceof Error ? caught.message : "Admin data unavailable");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function review(feedbackId: number, status: "accepted" | "closed") {
+    setReviewing(feedbackId);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch(
+        `${API}/v1/admin/feedback/${feedbackId}/review`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status }),
+        },
+      );
+      const body: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(errorMessage(body));
+
+      setNotice(
+        status === "accepted"
+          ? `Feedback #${feedbackId} accepted.`
+          : `Feedback #${feedbackId} closed.`,
+      );
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Review update failed");
+    } finally {
+      setReviewing(null);
     }
   }
 
@@ -53,13 +113,14 @@ export default function AdminPage() {
   }, []);
 
   return (
-    <main className="shell narrow">
+    <main className="shell narrow admin-page">
       <header className="page-head">
         <span className="eyebrow">OPERATIONS STATUS</span>
         <h1>Admin</h1>
         <p>
-          Minimal runtime view for the MVP. These counters are operational
-          signals, not model-quality metrics.
+          Runtime health and a human review queue for submitted sale outcomes.
+          Accept only feedback you consider credible; closed feedback remains
+          stored for audit but is not treated as approved.
         </p>
       </header>
 
@@ -78,13 +139,14 @@ export default function AdminPage() {
 
         <p className="refresh-status" role="status" aria-live="polite">
           {loading
-            ? "Fetching current metrics…"
+            ? "Fetching current admin data…"
             : lastRefreshed
               ? `Last refreshed: ${lastRefreshed.toLocaleTimeString()}`
               : "Waiting for metrics…"}
         </p>
 
         {error && <p className="error">{error}</p>}
+        {notice && <p className="form-status">{notice}</p>}
         {data && (
           <table>
             <tbody>
@@ -99,6 +161,76 @@ export default function AdminPage() {
             </tbody>
           </table>
         )}
+      </section>
+
+      <section className="admin-sheet feedback-queue">
+        <div className="sheet-title">
+          <span>FEEDBACK REVIEW QUEUE</span>
+          <span>{feedback ? `${feedback.length} RECORDS` : "LOADING"}</span>
+        </div>
+
+        {feedback === null && (
+          <div className="review-skeleton" aria-label="Loading feedback">
+            <span />
+            <span />
+            <span />
+          </div>
+        )}
+
+        {feedback?.length === 0 && (
+          <p className="queue-empty">No feedback has been submitted yet.</p>
+        )}
+
+        {feedback?.map((item) => {
+          const delta = item.actual_sale_price - item.predicted_price;
+          return (
+            <article className="feedback-review-card" key={item.id}>
+              <div className="feedback-review-head">
+                <div>
+                  <b>Feedback #{item.id}</b>
+                  <span className={`review-status ${item.review_status}`}>
+                    {item.review_status}
+                  </span>
+                </div>
+                <time dateTime={item.submitted_at}>
+                  {new Date(item.submitted_at).toLocaleString()}
+                </time>
+              </div>
+
+              <dl className="feedback-review-grid">
+                <div><dt>Actual sale</dt><dd>{money.format(item.actual_sale_price)}</dd></div>
+                <div><dt>Model estimate</dt><dd>{money.format(item.predicted_price)}</dd></div>
+                <div><dt>Difference</dt><dd>{money.format(delta)}</dd></div>
+                <div><dt>Sale date</dt><dd>{item.sale_date}</dd></div>
+                <div><dt>80% range</dt><dd>{money.format(item.interval_lower)} – {money.format(item.interval_upper)}</dd></div>
+                <div><dt>Support</dt><dd>{item.support.replaceAll("_", " ")}</dd></div>
+              </dl>
+
+              <p className="prediction-reference">
+                Prediction: <code>{item.prediction_id}</code> · Model {item.model_version}
+              </p>
+
+              <div className="review-actions">
+                <button
+                  type="button"
+                  className="accept-button"
+                  disabled={reviewing === item.id || item.review_status === "accepted"}
+                  onClick={() => void review(item.id, "accepted")}
+                >
+                  {item.review_status === "accepted" ? "Accepted" : "Accept"}
+                </button>
+                <button
+                  type="button"
+                  className="close-button"
+                  disabled={reviewing === item.id || item.review_status === "closed"}
+                  onClick={() => void review(item.id, "closed")}
+                >
+                  {item.review_status === "closed" ? "Closed" : "Close"}
+                </button>
+              </div>
+            </article>
+          );
+        })}
       </section>
     </main>
   );
