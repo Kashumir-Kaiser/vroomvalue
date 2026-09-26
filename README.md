@@ -203,7 +203,7 @@ Confirms that the API process is running.
 
 ### `GET /health/ready`
 
-Returns ready only when the dataset contract passes and the model artifact can be loaded and verified.
+Returns ready only when the dataset contract passes, the model artifact can be loaded and verified, and the application database is reachable.
 
 ### `GET /v1/metadata`
 
@@ -245,9 +245,9 @@ Returns the feedback moderation queue with submitted sale outcomes, their origin
 
 ### `POST /v1/admin/feedback/{feedback_id}/review`
 
-Marks a feedback record as `accepted` or `closed`. Feedback remains stored either way so moderation decisions are auditable. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Metric writes run only after the response body has been sent and are offloaded to Starlette's thread pool, avoiding synchronous database work on the async event loop. Health checks and the metrics endpoint itself are excluded from the service-rate counters. The invalid-input rate counts malformed or oversized request statuses 400, 413, and 422; authentication, missing-resource, conflict, and server failures remain part of the broader error rate but not the invalid-input rate.
+Marks a feedback record as `accepted` or `closed`. Feedback remains stored either way so moderation decisions are auditable. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Metric persistence is scheduled after the response body has been sent and runs outside the client response-completion path, so a slow metrics write does not hold the connection open. The counters can therefore be briefly eventually consistent immediately after a request. Health checks and the metrics endpoint itself are excluded from the service-rate counters. The invalid-input rate counts malformed or oversized request statuses 400, 413, and 422; authentication, missing-resource, conflict, and server failures remain part of the broader error rate but not the invalid-input rate.
 
-If `ADMIN_TOKEN` is configured, this route requires the token through the `X-Admin-Token` header.
+If `ADMIN_TOKEN` is configured, the admin routes require the token through the `X-Admin-Token` header. The Admin page provides an optional token field and keeps the value only for the current browser session.
 
 ## API validation and request handling
 
@@ -312,7 +312,7 @@ The Next.js frontend provides three primary views:
 - an actual-sale feedback page;
 - an operations/admin page with runtime metrics and a feedback moderation queue.
 
-The interface includes a persistent light/dark theme toggle and a GitHub profile link in the primary navigation.
+The interface includes a persistent light/dark theme toggle and a GitHub profile link in the primary navigation. Explicit theme choices are stored in a same-site cookie so the server can render the selected theme before first paint; with no stored choice, CSS follows the operating-system color scheme without waiting for React hydration.
 
 The vehicle form retrieves supported metadata from the API, uses cascading Make → Model selection, keeps optional fields explicitly unknown when not provided, and applies the Engine Size step of `0.1` in the browser.
 
@@ -420,7 +420,7 @@ After training has produced the model artifact and checksum, start the developme
 docker compose up --build --watch
 ```
 
-The API development image runs Uvicorn with `--reload`; Python source is bind-mounted and `WATCHFILES_FORCE_POLLING=true` makes reload detection reliable under Docker Desktop on Windows. The web development image runs Next.js with Turbopack and a bind-mounted `apps/web` tree. Container-owned `node_modules` and `.next` volumes keep generated files out of the host bind mount and prevent hot-reload synchronization loops.
+The API development image runs Uvicorn with `--reload` scoped to `/app/apps/api` and `/app/ml`; Python source is bind-mounted and `WATCHFILES_FORCE_POLLING=true` makes reload detection reliable under Docker Desktop on Windows. The web development image runs Next.js with Turbopack and a bind-mounted `apps/web` tree. Container-owned `node_modules` and `.next` volumes keep generated files out of the host bind mount and prevent hot-reload synchronization loops.
 
 Normal Python, TypeScript, React, and CSS edits reload in place and do not rebuild images. Compose Watch is retained only for dependency/Dockerfile changes such as `pyproject.toml`, `package*.json`, and the Dockerfiles; those changes intentionally rebuild the affected service. Turbopack is used for development so the browser does not depend on webpack's eval-based development bundles.
 
