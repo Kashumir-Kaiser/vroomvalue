@@ -1,8 +1,11 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { cookies } from "next/headers";
 
 import ThemeToggle from "../components/ThemeToggle";
+
+type Theme = "light" | "dark";
 
 export const metadata: Metadata = {
   title: "VroomValue — Used Vehicle Price Estimate",
@@ -10,18 +13,25 @@ export const metadata: Metadata = {
     "Estimate used-vehicle selling price with an 80% calibrated range and model support checks.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const cookieStore = await cookies();
+  const storedTheme = cookieStore.get("vroomvalue_theme")?.value;
+  const theme: Theme | undefined =
+    storedTheme === "light" || storedTheme === "dark"
+      ? storedTheme
+      : undefined;
+
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" data-theme={theme}>
       <body>
         <nav className="topnav" aria-label="Primary">
           <Link href="/">Estimate</Link>
           <Link href="/feedback">Feedback</Link>
           <Link href="/admin">Admin</Link>
           <span className="nav-actions">
-            <ThemeToggle />
+            <ThemeToggle initialTheme={theme ?? null} />
             <a
               className="github-link"
               href="https://github.com/Kashumir-Kaiser"
