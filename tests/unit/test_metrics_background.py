@@ -131,11 +131,9 @@ async def test_interrupted_started_response_still_logs_completion(caplog):
     async def send(message):
         return None
 
-    with (
-        caplog.at_level("INFO", logger="vroomvalue.api"),
-        pytest.raises(RuntimeError, match="stream failed"),
-    ):
-        await middleware(
+    with caplog.at_level("INFO", logger="vroomvalue.api"):
+        with pytest.raises(RuntimeError, match="stream failed"):
+            await middleware(
                 {
                     "type": "http",
                     "path": "/v1/predictions",
@@ -146,7 +144,7 @@ async def test_interrupted_started_response_still_logs_completion(caplog):
                 send,
             )
 
-    await middleware.wait_for_metric_tasks()
+        await middleware.wait_for_metric_tasks()
 
     completed = [
         record.message
