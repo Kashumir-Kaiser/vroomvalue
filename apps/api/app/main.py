@@ -50,7 +50,9 @@ def _require_admin_token(provided: str | None) -> None:
         raise HTTPException(status_code=401, detail="Admin authentication required.")
 
 
-def _persist_request_metric(path: str, status_code: int, latency_ms: float) -> None:
+def _persist_request_metric(_path: str, status_code: int, latency_ms: float) -> None:
+    # The path argument is retained for the middleware MetricRecorder contract.
+    # Path exclusion is owned by RequestObservabilityMiddleware.
     record_request_metric(status_code, latency_ms)
 
 
