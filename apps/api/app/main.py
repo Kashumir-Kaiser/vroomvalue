@@ -192,10 +192,9 @@ async def health_ready(request: Request):
 async def metadata(request: Request):
     handler_started = _handler_started(request)
 
-    phase = time.perf_counter()
-    await run_in_threadpool(runtime.refresh_if_changed)
-    _record_phase(request, "runtime_refresh", phase)
-
+    # Startup loads the active dataset/model bundle. Readiness and prediction
+    # requests own live artifact refresh checks; metadata should stay a cheap
+    # page-bootstrap read rather than stat-ing Windows bind mounts on every load.
     error = runtime.ready_error()
     if error:
         _record_handler_total(request, handler_started)
