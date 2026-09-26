@@ -11,6 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 
 from apps.api.app.database import (
     FeedbackRecord,
@@ -114,9 +115,9 @@ def _persist_request_metric(_path: str, status_code: int, latency_ms: float) -> 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    runtime.load(force=True)
+    await run_in_threadpool(runtime.load, True)
     try:
-        init_db()
+        await run_in_threadpool(init_db)
     except SQLAlchemyError:
         logger.exception(json.dumps({"event": "database.init_failed"}))
     yield
@@ -148,7 +149,7 @@ app.add_middleware(
 
 
 @app.get("/health/live")
-def health_live(request: Request):
+async def health_live(request: Request):
     handler_started = _handler_started(request)
     response = {"status": "ok"}
     _record_handler_total(request, handler_started)
@@ -156,11 +157,11 @@ def health_live(request: Request):
 
 
 @app.get("/health/ready")
-def health_ready(request: Request):
+async def health_ready(request: Request):
     handler_started = _handler_started(request)
 
     phase = time.perf_counter()
-    runtime.refresh_if_changed()
+    await run_in_threadpool(runtime.refresh_if_changed)
     _record_phase(request, "runtime_refresh", phase)
 
     error = runtime.ready_error()
@@ -172,7 +173,7 @@ def health_ready(request: Request):
         )
 
     phase = time.perf_counter()
-    db_is_ready = database_ready()
+    db_is_ready = await run_in_threadpool(database_ready)
     _record_phase(request, "database_ready", phase)
     if not db_is_ready:
         _record_handler_total(request, handler_started)
@@ -188,11 +189,11 @@ def health_ready(request: Request):
 
 
 @app.get("/v1/metadata")
-def metadata(request: Request):
+async def metadata(request: Request):
     handler_started = _handler_started(request)
 
     phase = time.perf_counter()
-    runtime.refresh_if_changed()
+    await run_in_threadpool(runtime.refresh_if_changed)
     _record_phase(request, "runtime_refresh", phase)
 
     error = runtime.ready_error()
@@ -208,18 +209,18 @@ def metadata(request: Request):
 
 
 @app.post("/v1/predictions", response_model=PredictionResponse)
-def predict(payload: VehicleInput, request: Request):
+async def predict(payload: VehicleInput, request: Request):
     handler_started = _handler_started(request)
 
     phase = time.perf_counter()
-    runtime.refresh_if_changed()
+    await run_in_threadpool(runtime.refresh_if_changed)
     _record_phase(request, "runtime_refresh", phase)
     error = runtime.ready_error()
     if error:
         raise HTTPException(status_code=503, detail=error)
 
     phase = time.perf_counter()
-    result = runtime.predict(payload)
+    result = await run_in_threadpool(runtime.predict, payload)
     _record_phase(request, "model_predict", phase)
     prediction_id = os.urandom(16).hex()
     request_id = request.state.request_id
@@ -227,7 +228,8 @@ def predict(payload: VehicleInput, request: Request):
 
     phase = time.perf_counter()
     try:
-        save_prediction(
+        await run_in_threadpool(
+            save_prediction,
             PredictionRecord(
                 id=prediction_id,
                 estimated_price=result["estimate"],
@@ -235,7 +237,7 @@ def predict(payload: VehicleInput, request: Request):
                 interval_upper=result["upper"],
                 support=result["support"],
                 model_version=runtime.bundle["model_version"],
-            )
+            ),
         )
     except SQLAlchemyError as exc:
         logger.error(
@@ -285,16 +287,17 @@ def predict(payload: VehicleInput, request: Request):
 
 
 @app.post("/v1/feedback")
-def feedback(payload: FeedbackInput, request: Request):
+async def feedback(payload: FeedbackInput, request: Request):
     handler_started = _handler_started(request)
     phase = time.perf_counter()
     try:
-        save_feedback(
+        await run_in_threadpool(
+            save_feedback,
             FeedbackRecord(
                 prediction_id=payload.prediction_id,
                 actual_sale_price=payload.actual_sale_price,
                 sale_date=payload.sale_date,
-            )
+            ),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -312,7 +315,7 @@ def feedback(payload: FeedbackInput, request: Request):
 
 
 @app.get("/v1/admin/metrics", response_model=AdminMetricsResponse)
-def metrics(
+async def metrics(
     request: Request,
     x_admin_token: str | None = Header(default=None),
 ) -> AdminMetricsResponse:
@@ -321,7 +324,7 @@ def metrics(
 
     phase = time.perf_counter()
     try:
-        data = admin_metrics()
+        data = await run_in_threadpool(admin_metrics)
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=503,
@@ -344,7 +347,7 @@ def metrics(
 
 
 @app.get("/v1/admin/feedback", response_model=list[AdminFeedbackItem])
-def admin_feedback(
+async def admin_feedback(
     request: Request,
     x_admin_token: str | None = Header(default=None),
 ) -> list[AdminFeedbackItem]:
@@ -353,7 +356,7 @@ def admin_feedback(
 
     phase = time.perf_counter()
     try:
-        rows = list_feedback_for_admin()
+        rows = await run_in_threadpool(list_feedback_for_admin)
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=503,
@@ -369,7 +372,7 @@ def admin_feedback(
 
 
 @app.post("/v1/admin/feedback/{feedback_id}/review")
-def review_feedback(
+async def review_feedback(
     feedback_id: int,
     payload: FeedbackReviewInput,
     request: Request,
@@ -380,7 +383,11 @@ def review_feedback(
 
     phase = time.perf_counter()
     try:
-        response = set_feedback_review_status(feedback_id, payload.status)
+        response = await run_in_threadpool(
+            set_feedback_review_status,
+            feedback_id,
+            payload.status,
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
