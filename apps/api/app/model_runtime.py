@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import time
@@ -17,12 +18,45 @@ from ml.artifacts import verify_checksum
 from ml.contracts.schema import DATASET_PATH, DatasetContractError, validate_dataset_contract
 from ml.features.build import build_features
 
+logger = logging.getLogger("vroomvalue.runtime")
+
 MODEL_PATH = Path(os.getenv("MODEL_ARTIFACT_PATH", "models/auto_price.joblib"))
 DATA_PATH = Path(os.getenv("DATASET_PATH", str(DATASET_PATH)))
-REFRESH_TTL_SECONDS = max(
-    0.0,
-    float(os.getenv("RUNTIME_REFRESH_TTL_SECONDS", "1.0")),
-)
+DEFAULT_REFRESH_TTL_SECONDS = 1.0
+
+
+class _UnsetSignature:
+    pass
+
+
+_UNSET_SIGNATURE = _UnsetSignature()
+
+
+def _read_refresh_ttl_seconds() -> float:
+    raw = os.getenv("RUNTIME_REFRESH_TTL_SECONDS")
+    if raw is None:
+        return DEFAULT_REFRESH_TTL_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid RUNTIME_REFRESH_TTL_SECONDS=%r; using %.1f seconds.",
+            raw,
+            DEFAULT_REFRESH_TTL_SECONDS,
+        )
+        return DEFAULT_REFRESH_TTL_SECONDS
+    if not math.isfinite(value):
+        logger.warning(
+            "Non-finite RUNTIME_REFRESH_TTL_SECONDS=%r; using %.1f seconds.",
+            raw,
+            DEFAULT_REFRESH_TTL_SECONDS,
+        )
+        return DEFAULT_REFRESH_TTL_SECONDS
+    return max(0.0, value)
+
+
+REFRESH_TTL_SECONDS = _read_refresh_ttl_seconds()
+
 CATEGORICAL_SUPPORT_FIELDS = {
     "make": "Make",
     "model": "Model",
@@ -43,7 +77,6 @@ NUMERIC_SUPPORT_FIELDS = {
     "owners": "Owners",
     "fuel_efficiency": "Fuel_Efficiency",
 }
-logger = logging.getLogger("vroomvalue.runtime")
 
 
 def _file_signature(path: Path) -> tuple[int, int, int] | None:
@@ -60,8 +93,12 @@ class Runtime:
         self.dataset_error: str | None = None
         self.model_error: str | None = None
         self._explainer: shap.TreeExplainer | None = None
-        self._dataset_signature: tuple[int, int, int] | None = None
-        self._model_signature: tuple[int, int, int] | None = None
+        self._dataset_signature: tuple[int, int, int] | None | _UnsetSignature = (
+            _UNSET_SIGNATURE
+        )
+        self._model_signature: tuple[int, int, int] | None | _UnsetSignature = (
+            _UNSET_SIGNATURE
+        )
         self._refresh_ttl_seconds = (
             REFRESH_TTL_SECONDS
             if refresh_ttl_seconds is None
@@ -127,6 +164,11 @@ class Runtime:
             self.bundle = None
             self._explainer = None
             self.model_error = f"Model artifact could not be loaded: {exc}"
+            # Do not cache a failed non-missing artifact signature. A transient
+            # partial write/read failure is retried after the refresh TTL even
+            # when filesystem metadata happens to remain unchanged.
+            self._model_signature = _UNSET_SIGNATURE
+            return
         self._model_signature = signature
 
     def load(self, *, force: bool = False) -> None:
