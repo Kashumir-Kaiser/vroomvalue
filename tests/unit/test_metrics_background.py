@@ -58,6 +58,7 @@ async def test_observability_records_after_response_body_is_sent():
         receive,
         send,
     )
+    await middleware.wait_for_metric_tasks()
 
     assert events == ["start-sent", "body-sent", "metric-recorded"]
     headers = dict(sent[0]["headers"])
@@ -101,6 +102,7 @@ async def test_413_reaches_metric_pipeline_without_response_mutation():
         receive,
         send,
     )
+    await app.wait_for_metric_tasks()
 
     assert sent[0]["status"] == 413
     assert calls == [("/v1/predictions", 413)]
