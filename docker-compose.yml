@@ -18,6 +18,19 @@ services:
       context: .
       dockerfile: infra/docker/api.Dockerfile
       target: development
+    command:
+      - uvicorn
+      - apps.api.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/apps/api
+      - --reload-dir
+      - /app/ml
+      - --no-access-log
     environment:
       DATABASE_URL: postgresql+psycopg://vroomvalue:vroomvalue@db:5432/vroomvalue
       DATASET_PATH: data/automobile_dataset.csv
