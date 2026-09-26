@@ -78,6 +78,30 @@ def test_happy_path_and_feedback():
         # thread-pool metric write, before returning each response.
         assert after["request_count"] == before["request_count"] + 2
 
+        review_queue = client.get("/v1/admin/feedback")
+        assert review_queue.status_code == 200
+        review_item = next(
+            item
+            for item in review_queue.json()
+            if item["prediction_id"] == body["prediction_id"]
+        )
+        assert review_item["review_status"] == "pending"
+
+        accepted = client.post(
+            f"/v1/admin/feedback/{review_item['id']}/review",
+            json={"status": "accepted"},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "accepted"
+
+        refreshed_queue = client.get("/v1/admin/feedback").json()
+        refreshed_item = next(
+            item
+            for item in refreshed_queue
+            if item["prediction_id"] == body["prediction_id"]
+        )
+        assert refreshed_item["review_status"] == "accepted"
+
 
 def test_engine_size_validation_is_422():
     with TestClient(app) as client:
