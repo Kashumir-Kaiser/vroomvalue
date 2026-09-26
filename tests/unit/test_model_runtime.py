@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import apps.api.app.model_runtime as model_runtime
+from apps.api.app import model_runtime
 from apps.api.app.model_runtime import Runtime
 from apps.api.app.schemas import VehicleInput
 
