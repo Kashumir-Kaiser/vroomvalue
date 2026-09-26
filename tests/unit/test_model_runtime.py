@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import apps.api.app.model_runtime as model_runtime
 from apps.api.app.model_runtime import Runtime
 from apps.api.app.schemas import VehicleInput
 
@@ -220,3 +221,84 @@ def test_support_uses_explicit_vehicle_model_mapping():
     assert support == "low_confidence"
     assert "Model was not observed in training data." in warnings
     assert "This Make-Model pairing was not observed in training data." in warnings
+
+
+
+def test_refresh_without_prior_load_populates_missing_file_errors(
+    monkeypatch,
+    tmp_path,
+):
+    runtime = Runtime(refresh_ttl_seconds=0)
+    missing_dataset = tmp_path / "missing.csv"
+    missing_model = tmp_path / "missing.joblib"
+
+    monkeypatch.setattr(model_runtime, "DATA_PATH", missing_dataset)
+    monkeypatch.setattr(model_runtime, "MODEL_PATH", missing_model)
+
+    runtime.refresh_if_changed()
+
+    assert runtime.dataset_error == (
+        f"Dataset not found at {missing_dataset.as_posix()}. Add the file and retry."
+    )
+    assert runtime.model_error == (
+        f"Model artifact not found at {missing_model.as_posix()}. "
+        "Train the model and retry."
+    )
+    assert runtime.ready_error() is not None
+
+
+@pytest.mark.parametrize("raw", ["not-a-number", "nan", "inf", "-inf"])
+def test_invalid_refresh_ttl_falls_back_to_default(monkeypatch, raw: str):
+    monkeypatch.setenv("RUNTIME_REFRESH_TTL_SECONDS", raw)
+
+    assert (
+        model_runtime._read_refresh_ttl_seconds()
+        == model_runtime.DEFAULT_REFRESH_TTL_SECONDS
+    )
+
+
+def test_negative_refresh_ttl_is_clamped_to_zero(monkeypatch):
+    monkeypatch.setenv("RUNTIME_REFRESH_TTL_SECONDS", "-2.5")
+
+    assert model_runtime._read_refresh_ttl_seconds() == 0.0
+
+
+def test_failed_model_load_retries_same_signature_after_ttl(monkeypatch):
+    runtime = Runtime(refresh_ttl_seconds=0)
+    fixed_signature = (1, 2, 3)
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(model_runtime, "_file_signature", lambda path: fixed_signature)
+    monkeypatch.setattr(model_runtime, "verify_checksum", lambda path: "ok")
+    monkeypatch.setattr(model_runtime.shap, "TreeExplainer", lambda model: object())
+
+    bundle = {
+        "model": FakeModel(),
+        "objective": "raw",
+        "reference_year": 2026,
+        "interval": {"edges": [-np.inf, np.inf], "quantiles": [500.0]},
+        "support": {},
+        "feature_columns": ["feature"],
+        "model_name": "auto_price",
+        "model_version": "1",
+        "schema_version": "1.0",
+        "as_of_date": "2026-09-26",
+    }
+
+    def flaky_load(path):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise OSError("transient read failure")
+        return bundle
+
+    monkeypatch.setattr(model_runtime.joblib, "load", flaky_load)
+
+    runtime.refresh_if_changed()
+    assert runtime.bundle is None
+    assert "transient read failure" in (runtime.model_error or "")
+
+    runtime.refresh_if_changed()
+
+    assert attempts["count"] == 2
+    assert runtime.bundle is bundle
+    assert runtime.model_error is None
