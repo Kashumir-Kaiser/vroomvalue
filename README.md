@@ -372,7 +372,7 @@ The local services are:
 | `DATABASE_URL` | `postgresql+psycopg://vroomvalue:vroomvalue@db:5432/vroomvalue` | SQLAlchemy database connection |
 | `DATASET_PATH` | `data/automobile_dataset.csv` | Dataset used by readiness checks |
 | `MODEL_ARTIFACT_PATH` | `models/auto_price.joblib` | Model bundle loaded by the API |
-| `RUNTIME_REFRESH_TTL_SECONDS` | `1.0` | Minimum interval between dataset/model filesystem-change checks per API process |
+| `RUNTIME_REFRESH_TTL_SECONDS` | `1.0` | Minimum interval between dataset/model filesystem-change checks per API process; malformed/non-finite values fall back to 1.0 and negative values clamp to 0 |
 | `CORS_ORIGINS` | `http://localhost:3000` | Allowed browser origins |
 | `MAX_BODY_BYTES` | `32768` | Maximum accepted request body size |
 | `ADMIN_TOKEN` | unset | Optional protection for the admin metrics route |
@@ -459,7 +459,7 @@ and:
 Dataset at data/automobile_dataset.csv contains no rows. Add data and retry.
 ```
 
-The API exposes the same dataset/model problems through `/health/ready` with HTTP 503 rather than reporting a healthy service without a usable model. Dataset/model change detection is throttled by a 1-second monotonic TTL by default, avoiding two filesystem `stat()` calls on every request while still allowing near-immediate local artifact refreshes.
+The API exposes the same dataset/model problems through `/health/ready` with HTTP 503 rather than reporting a healthy service without a usable model. Dataset/model change detection is throttled by a 1-second monotonic TTL by default, avoiding two filesystem `stat()` calls on every request while still allowing near-immediate local artifact refreshes. Runtime signatures start from an explicit unset sentinel, so a first refresh correctly reports missing files even if startup loading was skipped. Malformed or non-finite TTL environment values log a warning and fall back to 1.0 seconds. A non-missing model artifact that fails checksum/deserialization is not signature-cached as successful and is retried after the next TTL window.
 
 ## Known limitations
 
