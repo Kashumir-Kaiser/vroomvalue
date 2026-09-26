@@ -124,6 +124,7 @@ class RequestObservabilityMiddleware:
         self.excluded_paths = frozenset(excluded_paths)
         self.request_id_pattern = re.compile(request_id_pattern)
         self._metric_tasks: set[asyncio.Task[None]] = set()
+        self._log_tasks: set[asyncio.Task[None]] = set()
 
     def _request_id(self, scope: dict[str, Any]) -> str:
         for key, value in scope.get("headers", []):
@@ -152,8 +153,8 @@ class RequestObservabilityMiddleware:
         ]
         headers.append((name, value))
 
-    @staticmethod
-    def _log_completed(
+    def _schedule_completed_log(
+        self,
         request_id: str,
         path: str,
         status_code: int,
@@ -172,7 +173,12 @@ class RequestObservabilityMiddleware:
         }
         if timings_ms:
             payload["timings_ms"] = timings_ms
-        logger.info(json.dumps(payload))
+
+        task = asyncio.create_task(
+            run_in_threadpool(logger.info, json.dumps(payload))
+        )
+        self._log_tasks.add(task)
+        task.add_done_callback(self._log_tasks.discard)
 
     def _metric_is_excluded(self, path: str) -> bool:
         return any(
@@ -219,9 +225,11 @@ class RequestObservabilityMiddleware:
         task.add_done_callback(self._metric_tasks.discard)
 
     async def wait_for_metric_tasks(self) -> None:
-        """Wait for currently scheduled metric writes, primarily for shutdown/tests."""
-        while self._metric_tasks:
-            await asyncio.gather(*tuple(self._metric_tasks))
+        """Wait for currently scheduled metric/log tasks, primarily for tests."""
+        while self._metric_tasks or self._log_tasks:
+            pending = tuple(self._metric_tasks | self._log_tasks)
+            if pending:
+                await asyncio.gather(*pending)
 
     async def __call__(
         self,
@@ -290,7 +298,7 @@ class RequestObservabilityMiddleware:
             )
             if response_started:
                 self._schedule_metric(path, status_code, latency_ms)
-                self._log_completed(
+                self._schedule_completed_log(
                     request_id,
                     path,
                     status_code,
@@ -327,7 +335,7 @@ class RequestObservabilityMiddleware:
         if response_complete:
             self._schedule_metric(path, status_code, latency_ms)
 
-        self._log_completed(
+        self._schedule_completed_log(
             request_id,
             path,
             status_code,
