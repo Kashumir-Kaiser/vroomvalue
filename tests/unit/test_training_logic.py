@@ -68,3 +68,22 @@ def test_cold_start_partition_helper_rejects_overlapping_indices():
             np.array([3]),
             "raw",
         )
+
+
+
+def test_mlflow_tracking_uri_defaults_to_sqlite(monkeypatch):
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+
+    assert training._mlflow_tracking_uri() == "sqlite:///mlflow.db"
+
+
+def test_mlflow_tracking_uri_respects_nonblank_environment(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "sqlite:///custom-mlflow.db")
+
+    assert training._mlflow_tracking_uri() == "sqlite:///custom-mlflow.db"
+
+
+def test_mlflow_tracking_uri_blank_environment_uses_default(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "   ")
+
+    assert training._mlflow_tracking_uri() == "sqlite:///mlflow.db"
