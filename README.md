@@ -379,7 +379,15 @@ python --version
 python -m ml.training.train
 ```
 
-The version check must report Python 3.12.x before training starts. The training command uses the dependencies installed into `.venv` and writes the model artifacts under `models/`. Release training logs the run to the local MLflow file store under `mlruns/`.
+The version check must report Python 3.12.x before training starts. The training command uses the dependencies installed into `.venv` and writes the model artifacts under `models/`. Release training uses a local **SQLite MLflow tracking database** at `mlflow.db` by default. This avoids MLflow's deprecated filesystem tracking backend.
+
+If you want to use a different MLflow backend, set `MLFLOW_TRACKING_URI` before training. For example:
+
+```powershell
+# Windows PowerShell example
+$env:MLFLOW_TRACKING_URI = "sqlite:///custom-mlflow.db"
+python -m ml.training.train
+```
 
 For test/CI-style training where MLflow logging is intentionally skipped, still run the command from the same activated `.venv`:
 
@@ -414,6 +422,7 @@ The local services are:
 | `DATABASE_URL` | `postgresql+psycopg://vroomvalue:vroomvalue@db:5432/vroomvalue` | SQLAlchemy database connection |
 | `DATASET_PATH` | `data/automobile_dataset.csv` | Dataset used by readiness checks |
 | `MODEL_ARTIFACT_PATH` | `models/auto_price.joblib` | Model bundle loaded by the API |
+| `MLFLOW_TRACKING_URI` | `sqlite:///mlflow.db` | MLflow tracking backend used by release training; defaults to a local SQLite database |
 | `RUNTIME_REFRESH_TTL_SECONDS` | `1.0` | Minimum interval between dataset/model filesystem-change checks per API process; read when each `Runtime` is constructed, malformed/non-finite values fall back to 1.0, and negative values clamp to 0 |
 | `CORS_ORIGINS` | `http://localhost:3000` | Allowed browser origins |
 | `MAX_BODY_BYTES` | `32768` | Maximum accepted request body size |
