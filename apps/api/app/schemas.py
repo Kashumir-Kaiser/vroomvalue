@@ -114,6 +114,13 @@ class Factor(BaseModel):
     direction: Literal["up", "down"]
 
 
+class ModelMetadata(BaseModel):
+    name: str
+    version: str
+    schema_version: str
+    as_of_date: str
+
+
 class PredictionResponse(BaseModel):
     prediction_id: str
     request_id: str
@@ -122,7 +129,7 @@ class PredictionResponse(BaseModel):
     support: Literal["in_distribution", "low_confidence"]
     top_factors: list[Factor]
     warnings: list[str]
-    model: dict[str, str]
+    model: ModelMetadata
 
 
 class AdminMetricsResponse(BaseModel):
@@ -150,7 +157,7 @@ class AdminFeedbackItem(BaseModel):
     predicted_price: float
     interval_lower: float
     interval_upper: float
-    support: str
+    support: Literal["in_distribution", "low_confidence"]
     model_version: str
     review_status: Literal["pending", "accepted", "closed"]
     reviewed_at: datetime | None
