@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -68,14 +69,21 @@ def test_happy_path_and_feedback():
         assert feedback.status_code == 200
 
         # Health/admin requests themselves are excluded from service-rate counters.
+        # Metric persistence is asynchronous so response completion is never held
+        # open by a database write.
         client.get("/health/live")
         client.get("/health/ready")
-        after = client.get("/v1/admin/metrics").json()
+        deadline = time.monotonic() + 2.0
+        while True:
+            after = client.get("/v1/admin/metrics").json()
+            if after["request_count"] >= before["request_count"] + 2:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("request metrics were not persisted in time")
+            time.sleep(0.02)
 
         assert after["prediction_count"] >= 1
         assert after["feedback_count"] >= 1
-        # TestClient waits for the complete ASGI invocation, including the
-        # thread-pool metric write, before returning each response.
         assert after["request_count"] == before["request_count"] + 2
 
         review_queue = client.get("/v1/admin/feedback")
@@ -136,3 +144,17 @@ def test_admin_metrics_openapi_schema_is_explicit():
     ]["application/json"]["schema"]
 
     assert response_schema["$ref"].endswith("/AdminMetricsResponse")
+
+
+
+def test_readiness_includes_database_health(monkeypatch):
+    monkeypatch.setattr("apps.api.app.main.database_ready", lambda: False)
+
+    with TestClient(app) as client:
+        response = client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "detail": "Database is unavailable.",
+    }
