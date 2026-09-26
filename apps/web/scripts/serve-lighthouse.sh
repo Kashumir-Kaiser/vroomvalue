@@ -1,7 +1,11 @@
 #!/bin/sh
 set -eu
 
-rm -rf .next
+# /app/.next is a Docker named-volume mount in development. Remove its
+# contents, not the mount point itself, or Linux returns "Resource busy".
+mkdir -p .next
+find .next -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
 npm run build
 
 mkdir -p .next/standalone/.next
