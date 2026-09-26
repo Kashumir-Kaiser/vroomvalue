@@ -218,6 +218,11 @@ class RequestObservabilityMiddleware:
         self._metric_tasks.add(task)
         task.add_done_callback(self._metric_tasks.discard)
 
+    async def wait_for_metric_tasks(self) -> None:
+        """Wait for currently scheduled metric writes, primarily for shutdown/tests."""
+        while self._metric_tasks:
+            await asyncio.gather(*tuple(self._metric_tasks))
+
     async def __call__(
         self,
         scope: dict[str, Any],
@@ -247,12 +252,13 @@ class RequestObservabilityMiddleware:
                 self._set_header(headers, b"referrer-policy", b"no-referrer")
                 self._set_header(headers, b"x-frame-options", b"DENY")
                 message = {**message, "headers": headers}
-            elif (
+            final_body = (
                 message.get("type") == "http.response.body"
                 and not message.get("more_body", False)
-            ):
-                response_complete = True
+            )
             await send(message)
+            if final_body:
+                response_complete = True
 
         try:
             await self.app(scope, receive, observed_send)
