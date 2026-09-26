@@ -302,3 +302,87 @@ def test_failed_model_load_retries_same_signature_after_ttl(monkeypatch):
     assert attempts["count"] == 2
     assert runtime.bundle is bundle
     assert runtime.model_error is None
+
+
+
+def test_runtime_reads_ttl_environment_when_constructed(monkeypatch):
+    monkeypatch.setenv("RUNTIME_REFRESH_TTL_SECONDS", "2.5")
+
+    runtime = Runtime()
+
+    assert runtime._refresh_ttl_seconds == 2.5
+
+
+def test_persistent_model_failure_logs_are_rate_limited(monkeypatch, caplog):
+    runtime = Runtime(refresh_ttl_seconds=1.0)
+    fixed_signature = (7, 8, 9)
+    times = iter([10.0, 20.0, 71.0])
+
+    monkeypatch.setattr(model_runtime, "_file_signature", lambda path: fixed_signature)
+    monkeypatch.setattr(
+        model_runtime,
+        "verify_checksum",
+        lambda path: (_ for _ in ()).throw(ValueError("corrupt artifact")),
+    )
+    monkeypatch.setattr(
+        model_runtime.time,
+        "monotonic",
+        lambda: next(times),
+    )
+
+    with caplog.at_level("ERROR", logger="vroomvalue.runtime"):
+        runtime._load_model()
+        runtime._load_model()
+        runtime._load_model()
+
+    failure_logs = [
+        record.message
+        for record in caplog.records
+        if '"event": "model.load_failed"' in record.message
+    ]
+
+    assert len(failure_logs) == 2
+    assert '"consecutive_failures": 1' in failure_logs[0]
+    assert '"consecutive_failures": 3' in failure_logs[1]
+
+
+def test_model_recovery_log_resets_failure_counter(monkeypatch, caplog):
+    runtime = Runtime(refresh_ttl_seconds=0)
+    fixed_signature = (4, 5, 6)
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(model_runtime, "_file_signature", lambda path: fixed_signature)
+    monkeypatch.setattr(model_runtime.shap, "TreeExplainer", lambda model: object())
+
+    bundle = {
+        "model": FakeModel(),
+        "objective": "raw",
+        "reference_year": 2026,
+        "interval": {"edges": [-np.inf, np.inf], "quantiles": [500.0]},
+        "support": {},
+        "feature_columns": ["feature"],
+        "model_name": "auto_price",
+        "model_version": "1",
+        "schema_version": "1.0",
+        "as_of_date": "2026-09-26",
+    }
+
+    def flaky_verify(path):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise ValueError("corrupt artifact")
+        return "ok"
+
+    monkeypatch.setattr(model_runtime, "verify_checksum", flaky_verify)
+    monkeypatch.setattr(model_runtime.joblib, "load", lambda path: bundle)
+
+    with caplog.at_level("INFO", logger="vroomvalue.runtime"):
+        runtime._load_model()
+        runtime._load_model()
+
+    assert runtime._model_load_failure_count == 0
+    assert runtime._last_model_failure_log_at is None
+    assert any(
+        '"event": "model.load_recovered"' in record.message
+        for record in caplog.records
+    )
