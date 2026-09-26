@@ -88,9 +88,18 @@ def database_url() -> str:
     )
 
 
+def _pool_pre_ping_enabled() -> bool:
+    raw = os.getenv("DATABASE_POOL_PRE_PING", "true").strip().casefold()
+    return raw not in {"0", "false", "no", "off"}
+
+
 @lru_cache(maxsize=4)
 def _engine_for_url(url: str) -> Engine:
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(
+        url,
+        pool_pre_ping=_pool_pre_ping_enabled(),
+        pool_use_lifo=True,
+    )
 
 
 def engine() -> Engine:
@@ -245,19 +254,57 @@ def record_request_metric(status_code: int, latency_ms: float) -> None:
 
 
 def admin_metrics() -> dict[str, int | float]:
-    with Session(engine()) as session:
-        predictions = session.scalar(select(func.count()).select_from(PredictionRecord)) or 0
-        feedback = session.scalar(select(func.count()).select_from(FeedbackRecord)) or 0
-        service = session.get(ServiceMetricRecord, 1)
+    prediction_count = (
+        select(func.count())
+        .select_from(PredictionRecord)
+        .scalar_subquery()
+    )
+    feedback_count = (
+        select(func.count())
+        .select_from(FeedbackRecord)
+        .scalar_subquery()
+    )
+    requests_value = (
+        select(ServiceMetricRecord.request_count)
+        .where(ServiceMetricRecord.id == 1)
+        .scalar_subquery()
+    )
+    errors_value = (
+        select(ServiceMetricRecord.error_count)
+        .where(ServiceMetricRecord.id == 1)
+        .scalar_subquery()
+    )
+    invalid_value = (
+        select(ServiceMetricRecord.invalid_input_count)
+        .where(ServiceMetricRecord.id == 1)
+        .scalar_subquery()
+    )
+    latency_value = (
+        select(ServiceMetricRecord.total_latency_ms)
+        .where(ServiceMetricRecord.id == 1)
+        .scalar_subquery()
+    )
 
-    requests = int(service.request_count) if service else 0
-    errors = int(service.error_count) if service else 0
-    invalid = int(service.invalid_input_count) if service else 0
-    total_latency = float(service.total_latency_ms) if service else 0.0
+    statement = select(
+        prediction_count.label("prediction_count"),
+        feedback_count.label("feedback_count"),
+        func.coalesce(requests_value, 0).label("request_count"),
+        func.coalesce(errors_value, 0).label("error_count"),
+        func.coalesce(invalid_value, 0).label("invalid_input_count"),
+        func.coalesce(latency_value, 0.0).label("total_latency_ms"),
+    )
+
+    with Session(engine()) as session:
+        row = session.execute(statement).one()
+
+    requests = int(row.request_count)
+    errors = int(row.error_count)
+    invalid = int(row.invalid_input_count)
+    total_latency = float(row.total_latency_ms)
 
     return {
-        "prediction_count": int(predictions),
-        "feedback_count": int(feedback),
+        "prediction_count": int(row.prediction_count),
+        "feedback_count": int(row.feedback_count),
         "request_count": requests,
         "error_rate": round(errors / requests, 4) if requests else 0.0,
         "invalid_input_rate": round(invalid / requests, 4) if requests else 0.0,
