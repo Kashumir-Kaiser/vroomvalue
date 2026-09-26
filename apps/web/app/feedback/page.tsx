@@ -6,10 +6,8 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const EARLIEST_SALE_DATE = "1886-01-29";
 const MAX_SALE_PRICE = 10_000_000;
 
-function localToday(): string {
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 10);
+function utcToday(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function apiErrorMessage(body: unknown): string {
@@ -38,10 +36,14 @@ export default function FeedbackPage() {
   const [salePrice, setSalePrice] = useState("");
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const latestSaleDate = useMemo(localToday, []);
+  const latestSaleDate = useMemo(utcToday, []);
 
   useEffect(() => {
-    setPredictionId(localStorage.getItem("vroomvalue:lastPredictionId") ?? "");
+    try {
+      setPredictionId(localStorage.getItem("vroomvalue:lastPredictionId") ?? "");
+    } catch {
+      setPredictionId("");
+    }
   }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
