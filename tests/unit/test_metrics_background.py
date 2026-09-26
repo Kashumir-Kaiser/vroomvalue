@@ -146,6 +146,8 @@ async def test_interrupted_started_response_still_logs_completion(caplog):
                 send,
             )
 
+    await middleware.wait_for_metric_tasks()
+
     completed = [
         record.message
         for record in caplog.records
