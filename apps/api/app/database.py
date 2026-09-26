@@ -51,6 +51,16 @@ class FeedbackRecord(Base):
     )
 
 
+class FeedbackReviewRecord(Base):
+    __tablename__ = "feedback_reviews"
+
+    feedback_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16))
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 # 400 is intentionally treated as invalid input for malformed client requests at
 # our HTTP boundary (for example, an invalid Content-Length header).
 INVALID_INPUT_STATUS_CODES = frozenset({400, 413, 422})
@@ -118,6 +128,67 @@ def save_feedback(record: FeedbackRecord) -> None:
         except IntegrityError as exc:
             session.rollback()
             raise ValueError("Feedback already exists for this prediction id.") from exc
+
+
+def list_feedback_for_admin() -> list[dict[str, object]]:
+    with Session(engine()) as session:
+        rows = session.execute(
+            select(FeedbackRecord, PredictionRecord, FeedbackReviewRecord)
+            .join(
+                PredictionRecord,
+                FeedbackRecord.prediction_id == PredictionRecord.id,
+            )
+            .outerjoin(
+                FeedbackReviewRecord,
+                FeedbackReviewRecord.feedback_id == FeedbackRecord.id,
+            )
+            .order_by(FeedbackRecord.created_at.desc())
+        ).all()
+
+    return [
+        {
+            "id": feedback.id,
+            "prediction_id": feedback.prediction_id,
+            "actual_sale_price": feedback.actual_sale_price,
+            "sale_date": feedback.sale_date,
+            "submitted_at": feedback.created_at,
+            "predicted_price": prediction.estimated_price,
+            "interval_lower": prediction.interval_lower,
+            "interval_upper": prediction.interval_upper,
+            "support": prediction.support,
+            "model_version": prediction.model_version,
+            "review_status": review.status if review is not None else "pending",
+            "reviewed_at": review.reviewed_at if review is not None else None,
+        }
+        for feedback, prediction, review in rows
+    ]
+
+
+def set_feedback_review_status(feedback_id: int, status: str) -> dict[str, object]:
+    with Session(engine()) as session:
+        feedback = session.get(FeedbackRecord, feedback_id)
+        if feedback is None:
+            raise LookupError("Feedback id was not found.")
+
+        review = session.get(FeedbackReviewRecord, feedback_id)
+        now = datetime.now(UTC)
+        if review is None:
+            review = FeedbackReviewRecord(
+                feedback_id=feedback_id,
+                status=status,
+                reviewed_at=now,
+            )
+            session.add(review)
+        else:
+            review.status = status
+            review.reviewed_at = now
+
+        session.commit()
+        return {
+            "feedback_id": feedback_id,
+            "status": review.status,
+            "reviewed_at": review.reviewed_at,
+        }
 
 
 def _metric_update_values(
