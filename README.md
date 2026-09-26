@@ -237,7 +237,15 @@ Associates an actual sale price and sale date with an existing prediction. Dupli
 
 ### `GET /v1/admin/metrics`
 
-Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Metric writes run only after the response body has been sent and are offloaded to Starlette's thread pool, avoiding synchronous database work on the async event loop. Health checks and the metrics endpoint itself are excluded from the service-rate counters. The invalid-input rate counts malformed or oversized request statuses 400, 413, and 422; authentication, missing-resource, conflict, and server failures remain part of the broader error rate but not the invalid-input rate.
+Returns prediction count, feedback count, request count, error rate, invalid-input rate, average request latency, current model version, and readiness state.
+
+### `GET /v1/admin/feedback`
+
+Returns the feedback moderation queue with submitted sale outcomes, their originating model estimates, interval/support metadata, and review state.
+
+### `POST /v1/admin/feedback/{feedback_id}/review`
+
+Marks a feedback record as `accepted` or `closed`. Feedback remains stored either way so moderation decisions are auditable. Service counters are stored in the database and updated atomically, so they aggregate across API workers rather than resetting per process. Metric writes run only after the response body has been sent and are offloaded to Starlette's thread pool, avoiding synchronous database work on the async event loop. Health checks and the metrics endpoint itself are excluded from the service-rate counters. The invalid-input rate counts malformed or oversized request statuses 400, 413, and 422; authentication, missing-resource, conflict, and server failures remain part of the broader error rate but not the invalid-input rate.
 
 If `ADMIN_TOKEN` is configured, this route requires the token through the `X-Admin-Token` header.
 
@@ -302,7 +310,9 @@ The Next.js frontend provides three primary views:
 
 - the vehicle specification and prediction page;
 - an actual-sale feedback page;
-- a minimal operations/admin metrics page.
+- an operations/admin page with runtime metrics and a feedback moderation queue.
+
+The interface includes a persistent light/dark theme toggle and a GitHub profile link in the primary navigation.
 
 The vehicle form retrieves supported metadata from the API, uses cascading Make → Model selection, keeps optional fields explicitly unknown when not provided, and applies the Engine Size step of `0.1` in the browser.
 
@@ -404,11 +414,13 @@ deactivate
 
 ### Run the application
 
-After training has produced the model artifact and checksum:
+After training has produced the model artifact and checksum, start the development stack once with a build and Docker Compose Watch:
 
 ```bash
-docker compose up --build
+docker compose up --build --watch
 ```
+
+The API development image runs Uvicorn with `--reload`, while the web development image runs `next dev`. Compose Watch syncs edits under `apps/api`, `ml`, and `apps/web` into the running containers, so normal Python/TypeScript/CSS changes no longer require image rebuilds. Dependency-file changes such as `pyproject.toml` or the web `package*.json` files intentionally trigger a rebuild.
 
 The local services are:
 
@@ -431,11 +443,13 @@ Invoke-RestMethod http://localhost:8000/health/ready
 
 The expected statuses are `ok` for liveness and `ready` for readiness. Finally, open `http://localhost:3000` in a browser for the web application.
 
-After the first successful image build, ordinary restarts do not require rebuilding unless dependencies or Docker build inputs changed:
+After the first successful image build, restart development with watch enabled and without rebuilding:
 
 ```powershell
-docker compose up
+docker compose up --watch
 ```
+
+Keep that process running while editing. Uvicorn and Next.js reload after Compose synchronizes changed source files.
 
 To run the stack in the background instead:
 
@@ -460,7 +474,7 @@ docker compose down
 | `RUNTIME_REFRESH_TTL_SECONDS` | `1.0` | Minimum interval between dataset/model filesystem-change checks per API process; read when each `Runtime` is constructed, malformed/non-finite values fall back to 1.0, and negative values clamp to 0 |
 | `CORS_ORIGINS` | `http://localhost:3000` | Allowed browser origins |
 | `MAX_BODY_BYTES` | `32768` | Maximum accepted request body size |
-| `ADMIN_TOKEN` | unset | Optional protection for the admin metrics route |
+| `ADMIN_TOKEN` | unset | Optional protection for admin metrics and feedback-moderation routes |
 | `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | API base URL used by the frontend |
 
 ## Tests
