@@ -3,7 +3,7 @@ import math
 import pytest
 from pydantic import ValidationError
 
-from apps.api.app.schemas import FeedbackInput, VehicleInput
+from apps.api.app.schemas import FeedbackInput, FeedbackReviewInput, VehicleInput
 
 BASE = {
     "make": "Toyota",
@@ -96,3 +96,11 @@ def test_earliest_supported_feedback_date_is_valid():
         sale_date="1886-01-29",
     )
     assert payload.sale_date.isoformat() == "1886-01-29"
+
+
+
+def test_feedback_review_status_is_limited_to_supported_actions():
+    assert FeedbackReviewInput(status="accepted").status == "accepted"
+    assert FeedbackReviewInput(status="closed").status == "closed"
+    with pytest.raises(ValidationError):
+        FeedbackReviewInput(status="pending")
