@@ -19,15 +19,19 @@ html[data-theme="dark"] .sheet-title{background:#182433;color:#f5f7fa}
 @media(prefers-color-scheme:dark){html:not([data-theme]){--paper:#0b1118;--ink:#e8eef5;--steel:#9eacba;--rule:#344251;--signal:#ef8247;--blueprint:#1a2835;--white:#111a24;color-scheme:dark}html:not([data-theme]) body{background:linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px),var(--paper);background-size:24px 24px}html:not([data-theme]) .error{background:#351b19}html:not([data-theme]) .warnings{background:#342319}html:not([data-theme]) .support.in_distribution{background:#173426}html:not([data-theme]) .support.low_confidence{background:#40271c}html:not([data-theme]) .admin-sheet{background:var(--white)}html:not([data-theme]) input,html:not([data-theme]) select{color:var(--ink)}html:not([data-theme]) .review-status.accepted,html:not([data-theme]) .accept-button{background:#173426;color:#bfe4ca}html:not([data-theme]) .review-status.closed,html:not([data-theme]) .close-button{background:#3a2421;color:#f0c5bb}html:not([data-theme]) .sheet-title{background:#182433;color:#f5f7fa}}
 @media(max-width:560px){.admin-auth{align-items:stretch;flex-direction:column}}
 
-/* Keep the application chrome/specification copy from being accidentally
-   selected. Users can still select text they entered plus explicitly
-   copyable prediction outputs. */
-body{-webkit-user-select:none;user-select:none}
-input,textarea,.copyable{-webkit-user-select:text;user-select:text}
+/* Lock incidental application text selection. Only user-editable controls and
+   explicitly copyable prediction outputs opt back in. */
+body,body *{-webkit-user-select:none!important;user-select:none!important}
+input,textarea,select,.copyable,.copyable *{-webkit-user-select:text!important;user-select:text!important}
 .prediction-id{margin:0 20px 14px;color:var(--steel);font-size:.72rem;overflow-wrap:anywhere}
 .prediction-id code{color:var(--ink);font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-weight:800}
 
-/* Native option popups do not consistently inherit the select foreground
-   color on Windows/Chromium, so set both sides explicitly in dark mode. */
-html[data-theme="dark"] select option{background:#111a24;color:#e8eef5}
-@media(prefers-color-scheme:dark){html:not([data-theme]) select option{background:#111a24;color:#e8eef5}}
+/* Windows/Chromium native select popups can ignore option foreground styling
+   when the page advertises a dark color scheme. Force the popup itself to use
+   a light native scheme, while the closed select remains dark-themed. */
+html[data-theme="dark"] select{color-scheme:light;background:#111a24!important;color:#e8eef5!important}
+html[data-theme="dark"] select option,html[data-theme="dark"] select optgroup{background:#fff!important;color:#10233e!important}
+@media(prefers-color-scheme:dark){
+  html:not([data-theme]) select{color-scheme:light;background:#111a24!important;color:#e8eef5!important}
+  html:not([data-theme]) select option,html:not([data-theme]) select optgroup{background:#fff!important;color:#10233e!important}
+}
