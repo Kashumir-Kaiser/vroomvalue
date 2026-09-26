@@ -17,6 +17,7 @@ services:
     build:
       context: .
       dockerfile: infra/docker/api.Dockerfile
+      target: development
     environment:
       DATABASE_URL: postgresql+psycopg://vroomvalue:vroomvalue@db:5432/vroomvalue
       DATASET_PATH: data/automobile_dataset.csv
@@ -24,6 +25,20 @@ services:
     volumes:
       - ./data:/app/data:ro
       - ./models:/app/models:ro
+    develop:
+      watch:
+        - action: sync
+          path: ./apps/api
+          target: /app/apps/api
+          ignore:
+            - __pycache__/
+        - action: sync
+          path: ./ml
+          target: /app/ml
+          ignore:
+            - __pycache__/
+        - action: rebuild
+          path: ./pyproject.toml
     ports: ["8000:8000"]
     depends_on:
       db:
@@ -33,8 +48,26 @@ services:
     build:
       context: .
       dockerfile: infra/docker/web.Dockerfile
+      target: development
       args:
         NEXT_PUBLIC_API_URL: http://localhost:8000
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      WATCHPACK_POLLING: "true"
+    develop:
+      watch:
+        - action: sync
+          path: ./apps/web
+          target: /app
+          ignore:
+            - node_modules/
+            - .next/
+            - package.json
+            - package-lock.json
+        - action: rebuild
+          path: ./apps/web/package.json
+        - action: rebuild
+          path: ./apps/web/package-lock.json
     ports: ["3000:3000"]
     depends_on: [api]
 
