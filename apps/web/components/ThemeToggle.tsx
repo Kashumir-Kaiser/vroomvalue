@@ -1,40 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 type Theme = "light" | "dark";
 
-function preferredTheme(): Theme {
-  const stored = localStorage.getItem("vroomvalue:theme");
-  if (stored === "light" || stored === "dark") return stored;
+function systemTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-export default function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("light");
-
-  useEffect(() => {
-    const initial = preferredTheme();
-    setTheme(initial);
-    document.documentElement.dataset.theme = initial;
-  }, []);
+export default function ThemeToggle({
+  initialTheme,
+}: {
+  initialTheme: Theme | null;
+}) {
+  const [theme, setTheme] = useState<Theme | null>(initialTheme);
 
   function toggle() {
-    const next: Theme = theme === "dark" ? "light" : "dark";
+    const current = theme ?? systemTheme();
+    const next: Theme = current === "dark" ? "light" : "dark";
     setTheme(next);
     document.documentElement.dataset.theme = next;
-    localStorage.setItem("vroomvalue:theme", next);
+
+    try {
+      document.cookie =
+        `vroomvalue_theme=${next}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    } catch {
+      // The in-page theme still works if browser cookie storage is unavailable.
+    }
   }
+
+  const label =
+    theme === "dark" ? "Light" : theme === "light" ? "Dark" : "Theme";
 
   return (
     <button
       type="button"
       className="theme-toggle"
       onClick={toggle}
-      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      aria-label="Toggle color theme"
+      title="Toggle color theme"
     >
-      {theme === "dark" ? "Light" : "Dark"}
+      {label}
     </button>
   );
 }
