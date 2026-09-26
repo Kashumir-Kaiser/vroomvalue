@@ -10,7 +10,7 @@ USER appuser
 EXPOSE 8000
 
 FROM base AS development
-CMD ["uvicorn", "apps.api.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/apps/api", "--reload-dir", "/app/ml"]
+CMD ["uvicorn", "apps.api.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/apps/api", "--reload-dir", "/app/ml", "--no-access-log"]
 
 FROM base AS production
 CMD ["uvicorn", "apps.api.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
