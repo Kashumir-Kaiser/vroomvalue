@@ -111,7 +111,13 @@ class Runtime:
         self._lock = threading.RLock()
 
     def _load_dataset_gate(self, *, force: bool = False) -> None:
-        signature = _file_signature(DATA_PATH)
+        try:
+            signature = _file_signature(DATA_PATH)
+        except OSError as exc:
+            self.dataset_error = f"Dataset path could not be accessed: {exc}"
+            self._dataset_signature = _UNSET_SIGNATURE
+            return
+
         if (
             not force
             and self._dataset_signature is not _UNSET_SIGNATURE
@@ -123,6 +129,10 @@ class Runtime:
             self.dataset_error = None
         except DatasetContractError as exc:
             self.dataset_error = str(exc)
+        except OSError as exc:
+            self.dataset_error = f"Dataset could not be read: {exc}"
+            self._dataset_signature = _UNSET_SIGNATURE
+            return
         self._dataset_signature = signature
 
     def _record_model_load_failure(
@@ -168,7 +178,15 @@ class Runtime:
         self._last_model_failure_log_at = None
 
     def _load_model(self, *, force: bool = False) -> None:
-        signature = _file_signature(MODEL_PATH)
+        try:
+            signature = _file_signature(MODEL_PATH)
+        except OSError as exc:
+            self.bundle = None
+            self._explainer = None
+            self.model_error = f"Model artifact path could not be accessed: {exc}"
+            self._model_signature = _UNSET_SIGNATURE
+            return
+
         if (
             not force
             and self._model_signature is not _UNSET_SIGNATURE
@@ -274,22 +292,41 @@ class Runtime:
         support = self.bundle["support"]
         warnings: list[str] = []
 
+        categories = support.get("categories", {})
         for request_field, training_field in CATEGORICAL_SUPPORT_FIELDS.items():
             value = getattr(payload, request_field)
-            if value is not None and value not in support["categories"][training_field]:
+            if value is None:
+                continue
+            observed = categories.get(training_field)
+            if not isinstance(observed, (list, tuple, set)):
+                warnings.append(f"{training_field} support metadata is unavailable.")
+            elif value not in observed:
                 warnings.append(f"{training_field} was not observed in training data.")
 
-        if (
-            payload.make in support["make_models"]
-            and payload.model not in support["make_models"][payload.make]
-        ):
-            warnings.append("This Make-Model pairing was not observed in training data.")
+        make_models = support.get("make_models", {})
+        if isinstance(make_models, dict) and payload.make in make_models:
+            if payload.model not in make_models[payload.make]:
+                warnings.append("This Make-Model pairing was not observed in training data.")
+        elif not isinstance(make_models, dict):
+            warnings.append("Make-Model support metadata is unavailable.")
 
+        numeric_support = support.get("numeric", {})
         for request_field, training_field in NUMERIC_SUPPORT_FIELDS.items():
             value = getattr(payload, request_field)
             if value is None:
                 continue
-            bounds = support["numeric"][training_field]
+            bounds = (
+                numeric_support.get(training_field)
+                if isinstance(numeric_support, dict)
+                else None
+            )
+            if (
+                not isinstance(bounds, dict)
+                or "min" not in bounds
+                or "max" not in bounds
+            ):
+                warnings.append(f"{training_field} support metadata is unavailable.")
+                continue
             if value < bounds["min"] or value > bounds["max"]:
                 warnings.append(f"{training_field} is outside the observed training range.")
 
