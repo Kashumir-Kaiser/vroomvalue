@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -140,24 +141,28 @@ class Runtime:
 
         self._last_model_failure_log_at = now
         logger.error(
-            {
-                "event": "model.load_failed",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-                "artifact_signature": signature,
-                "consecutive_failures": self._model_load_failure_count,
-                "retry_after_seconds": self._refresh_ttl_seconds,
-            }
+            json.dumps(
+                {
+                    "event": "model.load_failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "artifact_signature": signature,
+                    "consecutive_failures": self._model_load_failure_count,
+                    "retry_after_seconds": self._refresh_ttl_seconds,
+                }
+            )
         )
 
     def _record_model_load_recovery(self) -> None:
         if self._model_load_failure_count == 0:
             return
         logger.info(
-            {
-                "event": "model.load_recovered",
-                "prior_consecutive_failures": self._model_load_failure_count,
-            }
+            json.dumps(
+                {
+                    "event": "model.load_recovered",
+                    "prior_consecutive_failures": self._model_load_failure_count,
+                }
+            )
         )
         self._model_load_failure_count = 0
         self._last_model_failure_log_at = None
