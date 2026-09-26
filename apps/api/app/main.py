@@ -15,6 +15,7 @@ from apps.api.app.database import (
     FeedbackRecord,
     PredictionRecord,
     admin_metrics,
+    database_ready,
     init_db,
     list_feedback_for_admin,
     record_request_metric,
@@ -39,7 +40,33 @@ from apps.api.app.schemas import (
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("vroomvalue.api")
 
-MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", "32768"))
+DEFAULT_MAX_BODY_BYTES = 32768
+
+
+def _read_max_body_bytes() -> int:
+    raw = os.getenv("MAX_BODY_BYTES")
+    if raw is None:
+        return DEFAULT_MAX_BODY_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid MAX_BODY_BYTES=%r; using %d.",
+            raw,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        return DEFAULT_MAX_BODY_BYTES
+    if value <= 0:
+        logger.warning(
+            "Non-positive MAX_BODY_BYTES=%r; using %d.",
+            raw,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        return DEFAULT_MAX_BODY_BYTES
+    return value
+
+
+MAX_BODY_BYTES = _read_max_body_bytes()
 REQUEST_ID_PATTERN = r"^[A-Za-z0-9._-]{1,64}$"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 METRICS_EXCLUDED_PATHS = {
@@ -106,7 +133,15 @@ def health_ready():
     runtime.refresh_if_changed()
     error = runtime.ready_error()
     if error:
-        return JSONResponse(status_code=503, content={"status": "not_ready", "detail": error})
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "detail": error},
+        )
+    if not database_ready():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "detail": "Database is unavailable."},
+        )
     assert runtime.bundle is not None
     return {"status": "ready", "model_version": runtime.bundle["model_version"]}
 
