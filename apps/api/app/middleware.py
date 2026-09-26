@@ -160,19 +160,19 @@ class RequestObservabilityMiddleware:
         latency_ms: float,
         *,
         interrupted: bool = False,
+        timings_ms: dict[str, float] | None = None,
     ) -> None:
-        logger.info(
-            json.dumps(
-                {
-                    "event": "request.completed",
-                    "request_id": request_id,
-                    "route": path,
-                    "status_code": status_code,
-                    "latency_ms": round(latency_ms, 2),
-                    "interrupted": interrupted,
-                }
-            )
-        )
+        payload: dict[str, object] = {
+            "event": "request.completed",
+            "request_id": request_id,
+            "route": path,
+            "status_code": status_code,
+            "latency_ms": round(latency_ms, 2),
+            "interrupted": interrupted,
+        }
+        if timings_ms:
+            payload["timings_ms"] = timings_ms
+        logger.info(json.dumps(payload))
 
     def _metric_is_excluded(self, path: str) -> bool:
         return any(
@@ -235,8 +235,11 @@ class RequestObservabilityMiddleware:
 
         path = str(scope.get("path", ""))
         request_id = self._request_id(scope)
-        scope.setdefault("state", {})["request_id"] = request_id
         started = time.perf_counter()
+        state = scope.setdefault("state", {})
+        state["request_id"] = request_id
+        state["request_started_perf"] = started
+        state["handler_timings"] = {}
         status_code = 500
         response_started = False
         response_complete = False
@@ -251,6 +254,17 @@ class RequestObservabilityMiddleware:
                 self._set_header(headers, b"x-content-type-options", b"nosniff")
                 self._set_header(headers, b"referrer-policy", b"no-referrer")
                 self._set_header(headers, b"x-frame-options", b"DENY")
+                timings = state.get("handler_timings", {})
+                if isinstance(timings, dict) and timings:
+                    server_timing = ", ".join(
+                        f"{name.replace('_', '-')};dur={float(duration):.2f}"
+                        for name, duration in timings.items()
+                    )
+                    self._set_header(
+                        headers,
+                        b"server-timing",
+                        server_timing.encode("ascii", errors="ignore"),
+                    )
                 message = {**message, "headers": headers}
             final_body = (
                 message.get("type") == "http.response.body"
@@ -282,6 +296,7 @@ class RequestObservabilityMiddleware:
                     status_code,
                     latency_ms,
                     interrupted=True,
+                    timings_ms=state.get("handler_timings"),
                 )
                 raise
 
@@ -317,4 +332,5 @@ class RequestObservabilityMiddleware:
             path,
             status_code,
             latency_ms,
+            timings_ms=state.get("handler_timings"),
         )
